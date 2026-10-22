@@ -486,7 +486,7 @@ class BackupJobRecoveryTest {
             RegionResolver resolver = new RegionResolver("us-east-1", ACCOUNT);
             ObjectMapper mapper = new ObjectMapper();
             SnsService sns = mock(SnsService.class);
-            BackupService first = new BackupService(firstStorage, config, resolver, mapper, sns, mock(RamService.class));
+            BackupService first = new BackupService(firstStorage, config, resolver, mapper, sns, mock(RamService.class), mock(S3RecoveryPointContents.class));
             String jobId;
             String capturedId;
             long capturedDate;
@@ -507,7 +507,7 @@ class BackupJobRecoveryTest {
             JsonNode disk = mapper.readTree(path.resolve("backup-jobs.json").toFile()).path(ACCOUNT + "/" + jobId);
             assertEquals(capturedId, disk.path("FlociVaultId").asText());
             StorageFactory reloadedStorage = new StorageFactory(config, access);
-            BackupService restarted = new BackupService(reloadedStorage, config, resolver, mapper, sns, mock(RamService.class));
+            BackupService restarted = new BackupService(reloadedStorage, config, resolver, mapper, sns, mock(RamService.class), mock(S3RecoveryPointContents.class));
             try {
                 assertEquals(capturedId, restarted.describeBackupJob(jobId).getVaultId());
                 assertEquals(capturedId, restarted.describeBackupVault(VAULT, REGION).getVaultId());
@@ -604,7 +604,7 @@ class BackupJobRecoveryTest {
         }
 
         private BackupService newService() {
-            return new BackupService(storage, config, resolver, mapper, sns, mock(RamService.class));
+            return new BackupService(storage, config, resolver, mapper, sns, mock(RamService.class), mock(S3RecoveryPointContents.class));
         }
 
         private BackupVault vault() {

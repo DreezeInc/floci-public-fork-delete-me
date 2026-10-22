@@ -37,7 +37,8 @@ class BackupPlanConcurrencyTest {
         EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
         when(config.services().backup().jobCompletionDelaySeconds()).thenReturn(3600);
         BackupService service = new BackupService(storage, config, new RegionResolver("eu-west-2", account),
-                new ObjectMapper(), mock(SnsService.class), mock(RamService.class));
+                new ObjectMapper(), mock(SnsService.class), mock(RamService.class),
+                mock(S3RecoveryPointContents.class));
         CountDownLatch writing = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         try {

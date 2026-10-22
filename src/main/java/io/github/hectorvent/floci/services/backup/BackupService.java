@@ -24,6 +24,7 @@ import io.github.hectorvent.floci.services.backup.model.CalculatedLifecycle;
 import io.github.hectorvent.floci.services.backup.model.CopyJob;
 import io.github.hectorvent.floci.services.backup.model.Lifecycle;
 import io.github.hectorvent.floci.services.backup.model.RecoveryPoint;
+import io.github.hectorvent.floci.services.backup.model.RestoreJob;
 import io.github.hectorvent.floci.services.ram.RamService;
 import io.github.hectorvent.floci.services.sns.SnsService;
 import io.github.hectorvent.floci.services.sqs.model.MessageAttributeValue;
@@ -40,6 +41,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,6 +73,7 @@ public class BackupService {
     private static final Set<String> VAULT_TYPES =
             Set.of(STANDARD_VAULT, AIR_GAPPED_VAULT, "RESTORE_ACCESS_BACKUP_VAULT");
     private static final Set<String> COPY_JOB_STATES = Set.of("CREATED", "RUNNING", "COMPLETED", "FAILED", "PARTIAL");
+    private static final Set<String> RESTORE_JOB_STATUSES = Set.of("PENDING", "RUNNING", "COMPLETED", "ABORTED", "FAILED");
     private static final String VAULT_RESOURCE_PREFIX = "backup-vault:";
 
     private final AccountAwareStorageBackend<BackupVault>   vaultStore;
@@ -81,9 +84,11 @@ public class BackupService {
     private final AccountAwareStorageBackend<String>        accessPolicyStore;
     private final StorageBackend<String, BackupVaultNotifications> notificationStore;
     private final StorageBackend<String, CopyJob>           copyJobStore;
+    private final StorageBackend<String, RestoreJob>        restoreJobStore;
     private final StorageBackend<String, String>            idempotencyStore;
 
     private final RamService ramService;
+    private final S3RecoveryPointContents s3Contents;
     private final RegionResolver regionResolver;
     private final SnsService snsService;
     private final int jobCompletionDelaySeconds;
@@ -106,7 +111,8 @@ public class BackupService {
 
     @Inject
     public BackupService(StorageFactory storageFactory, EmulatorConfig config, RegionResolver regionResolver,
-                         ObjectMapper objectMapper, SnsService snsService, RamService ramService) {
+                         ObjectMapper objectMapper, SnsService snsService, RamService ramService,
+                         S3RecoveryPointContents s3Contents) {
         this.vaultStore     = storageFactory.create("backup", "backup-vaults.json",     new TypeReference<>() {});
         this.planStore      = storageFactory.create("backup", "backup-plans.json",      new TypeReference<>() {});
         this.selectionStore = storageFactory.create("backup", "backup-selections.json", new TypeReference<>() {});
@@ -115,8 +121,10 @@ public class BackupService {
         this.accessPolicyStore  = storageFactory.create("backup", "backup-vault-access-policies.json", new TypeReference<>() {});
         this.notificationStore  = storageFactory.create("backup", "backup-vault-notifications.json",   new TypeReference<>() {});
         this.copyJobStore       = storageFactory.create("backup", "backup-copy-jobs.json",             new TypeReference<>() {});
+        this.restoreJobStore    = storageFactory.create("backup", "backup-restore-jobs.json",          new TypeReference<>() {});
         this.idempotencyStore   = storageFactory.create("backup", "backup-idempotency-tokens.json",    new TypeReference<>() {});
         this.ramService = ramService;
+        this.s3Contents = s3Contents;
         this.regionResolver = regionResolver;
         this.objectMapper = objectMapper;
         this.snsService = snsService;
@@ -991,6 +999,7 @@ public class BackupService {
                 }
             }
             recoveryStore.delete(recoveryPointArn);
+            s3Contents.delete(recoveryPointArn);
             decrementVaultCount(vaultName, region);
         }
     }
@@ -1145,6 +1154,7 @@ public class BackupService {
         copy.setEncryptionKeyArn(destVault.getEncryptionKeyArn());
         copy.setEncryptionKeyType(destVault.getEncryptionKeyType());
         copy.setEncrypted(AIR_GAPPED_VAULT.equals(destVault.getVaultType()) || destVault.getEncryptionKeyArn() != null);
+        s3Contents.copy(job.getAccountId(), source.getRecoveryPointArn(), dest.accountId(), rpArn);
         recoveryStore.putForAccount(dest.accountId(), rpArn, copy);
         adjustVaultCount(dest.accountId(), dest.region(), destName, 1);
         job.setDestinationRecoveryPointArn(rpArn);
@@ -1235,6 +1245,156 @@ public class BackupService {
         return days == null ? null : Instant.ofEpochSecond(epochSecond).plus(days, ChronoUnit.DAYS).getEpochSecond();
     }
 
+    // ── Restore ────────────────────────────────────────────────────────────────
+
+    public record RestoreMetadata(String backupVaultArn, String recoveryPointArn, String resourceType,
+                                  Map<String, String> metadata) {}
+
+    public RestoreMetadata getRecoveryPointRestoreMetadata(String vaultName, String vaultAccountId,
+                                                           String recoveryPointArn, String region) {
+        RecoveryPoint rp = describeRecoveryPoint(vaultName, vaultAccountId, recoveryPointArn, region);
+        Map<String, String> metadata = new LinkedHashMap<>();
+        if ("S3".equals(rp.getResourceType()) && rp.getResourceName() != null) {
+            metadata.put("DestinationBucketName", rp.getResourceName());
+            metadata.put("NewBucket", "false");
+            metadata.put("Encrypted", "false");
+            metadata.put("EncryptionType", S3RestoreRequest.ORIGINAL);
+        }
+        metadata.put("aws:backup:request-id", UUID.randomUUID().toString());
+        return new RestoreMetadata(rp.getBackupVaultArn(), rp.getRecoveryPointArn(), rp.getResourceType(), metadata);
+    }
+
+    /** Restores into the caller's account, from its own recovery point or one in a vault shared with it. */
+    public RestoreJob startRestoreJob(String recoveryPointArn, Map<String, String> metadata, String iamRoleArn,
+                                      String idempotencyToken, String resourceType, String region) {
+        requireParameter("RecoveryPointArn", recoveryPointArn);
+        if (metadata == null) {
+            throw new AwsException("MissingParameterValueException", "Metadata is required", 400);
+        }
+        String tokenKey = idempotencyToken == null ? null : "restore:" + idempotencyToken;
+        if (tokenKey != null) {
+            Optional<RestoreJob> existing = idempotencyStore.get(tokenKey).flatMap(restoreJobStore::get);
+            if (existing.isPresent()) {
+                return existing.get();
+            }
+        }
+        String caller = regionResolver.getAccountId();
+        String ownerAccountId = AwsArnUtils.parse(requireRecoveryPointArn(recoveryPointArn)).accountId();
+        RecoveryPoint rp = restorableRecoveryPoint(recoveryPointArn, ownerAccountId, caller, region);
+        if (resourceType != null && !resourceType.equals(rp.getResourceType())) {
+            throw new AwsException("InvalidParameterValueException", "ResourceType " + resourceType
+                    + " does not match the recovery point's resource type " + rp.getResourceType(), 400);
+        }
+        if (!"COMPLETED".equals(rp.getStatus())) {
+            throw new AwsException("InvalidRequestException",
+                    "Recovery point " + recoveryPointArn + " is " + rp.getStatus() + ", not COMPLETED", 400);
+        }
+        S3RestoreRequest request = "S3".equals(rp.getResourceType())
+                ? S3RestoreRequest.from(metadata, region, objectMapper)
+                : null;
+
+        RestoreJob job = new RestoreJob();
+        job.setRestoreJobId(UUID.randomUUID().toString());
+        job.setAccountId(caller);
+        job.setRecoveryPointArn(recoveryPointArn);
+        job.setSourceResourceArn(rp.getResourceArn());
+        job.setBackupVaultArn(rp.getBackupVaultArn());
+        job.setResourceType(rp.getResourceType());
+        job.setIamRoleArn(iamRoleArn);
+        job.setRecoveryPointCreationDate(rp.getCreationDate());
+        job.setBackupSizeInBytes(rp.getBackupSizeInBytes());
+        job.setCreationDate(Instant.now().getEpochSecond());
+        job.setStatus("PENDING");
+        job.setPercentDone("0.00%");
+        String jobId = job.getRestoreJobId();
+        restoreJobStore.put(jobId, job);
+        if (tokenKey != null) {
+            idempotencyStore.put(tokenKey, jobId);
+        }
+
+        scheduler.schedule(() -> RequestScopes.runAs(caller, () -> {
+            restoreJobStore.get(jobId).filter(j -> "PENDING".equals(j.getStatus())).ifPresent(j -> {
+                j.setStatus("RUNNING");
+                restoreJobStore.put(jobId, j);
+            });
+        }), 1, TimeUnit.SECONDS);
+        scheduler.schedule(() -> RequestScopes.runAs(caller,
+                () -> completeRestoreJob(jobId, ownerAccountId, request)), jobCompletionDelaySeconds, TimeUnit.SECONDS);
+        return job;
+    }
+
+    public RestoreJob describeRestoreJob(String restoreJobId) {
+        return restoreJobStore.get(restoreJobId)
+                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
+                        "Restore job not found: " + restoreJobId, 400));
+    }
+
+    public List<RestoreJob> listRestoreJobs(String byAccountId, String byResourceType, String byStatus,
+                                            Long createdBefore, Long createdAfter) {
+        if (byStatus != null && !RESTORE_JOB_STATUSES.contains(byStatus)) {
+            throw new AwsException("InvalidParameterValueException", "Invalid restore job status: " + byStatus, 400);
+        }
+        return restoreJobStore.scan(k -> true).stream()
+                .filter(j -> byAccountId == null || byAccountId.equals(j.getAccountId()))
+                .filter(j -> byResourceType == null || byResourceType.equals(j.getResourceType()))
+                .filter(j -> byStatus == null || byStatus.equals(j.getStatus()))
+                .filter(j -> createdBefore == null || j.getCreationDate() < createdBefore)
+                .filter(j -> createdAfter == null || j.getCreationDate() > createdAfter)
+                .toList();
+    }
+
+    private RecoveryPoint restorableRecoveryPoint(String recoveryPointArn, String ownerAccountId,
+                                                  String caller, String region) {
+        AwsException notFound = new AwsException("ResourceNotFoundException",
+                "Recovery point not found: " + recoveryPointArn, 400);
+        if (!region.equals(AwsArnUtils.parse(recoveryPointArn).region())) {
+            throw notFound;
+        }
+        RecoveryPoint rp = recoveryStore.getForAccount(ownerAccountId, recoveryPointArn).orElseThrow(() -> notFound);
+        if (!ownerAccountId.equals(caller)) {
+            vaultStore.getForAccount(ownerAccountId, vaultKey(region, rp.getBackupVaultName()))
+                    .filter(vault -> vault.getBackupVaultArn().equals(rp.getBackupVaultArn()))
+                    .filter(vault -> isSharedWith(vault, caller))
+                    .orElseThrow(() -> notFound);
+        }
+        return rp;
+    }
+
+    private void completeRestoreJob(String jobId, String ownerAccountId, S3RestoreRequest request) {
+        restoreJobStore.get(jobId).filter(j -> "RUNNING".equals(j.getStatus())).ifPresent(job -> {
+            long now = Instant.now().getEpochSecond();
+            try {
+                if (request == null) {
+                    throw new AwsException("InvalidRequestException",
+                            "Restoring " + job.getResourceType() + " recovery points is not supported", 400);
+                }
+                job.setBackupSizeInBytes(s3Contents.restore(ownerAccountId, job.getRecoveryPointArn(), request));
+                job.setCreatedResourceArn("arn:" + AwsArnUtils.parse(job.getRecoveryPointArn()).partition()
+                        + ":s3:::" + request.bucket());
+                job.setPercentDone("100.00%");
+                job.setStatus("COMPLETED");
+                recoveryStore.getForAccount(ownerAccountId, job.getRecoveryPointArn()).ifPresent(rp -> {
+                    rp.setLastRestoreTime(now);
+                    recoveryStore.putForAccount(ownerAccountId, rp.getRecoveryPointArn(), rp);
+                });
+            } catch (AwsException e) {
+                job.setStatus("FAILED");
+                job.setStatusMessage(e.getMessage());
+            }
+            job.setCompletionDate(now);
+            restoreJobStore.put(jobId, job);
+            LOG.infov("Restore job {0} {1}", jobId, job.getStatus());
+        });
+    }
+
+    private static String requireRecoveryPointArn(String recoveryPointArn) {
+        if (!AwsArnUtils.resourceIfArnFor(recoveryPointArn, "backup").orElse("").startsWith("recovery-point:")) {
+            throw new AwsException("InvalidParameterValueException",
+                    "Invalid recovery point ARN: " + recoveryPointArn, 400);
+        }
+        return recoveryPointArn;
+    }
+
     // ── Tags ───────────────────────────────────────────────────────────────────
 
     public Map<String, String> listTags(String resourceArn) {
@@ -1302,7 +1462,21 @@ public class BackupService {
                 String notificationKey = subResourceKey(region, currentVault);
                 String rpArn = job.getRecoveryPointArn() != null ? job.getRecoveryPointArn()
                         : regionResolver.buildArn("backup", region, "recovery-point:" + jobId);
-                if (recoveryStore.get(rpArn).isEmpty()) {
+                Optional<RecoveryPoint> stored = recoveryStore.get(rpArn);
+                long size = stored.map(RecoveryPoint::getBackupSizeInBytes).orElse(0L);
+                if (stored.isEmpty()) {
+                    if ("S3".equals(job.getResourceType())) {
+                        try {
+                            size = s3Contents.capture(rpArn, job.getResourceName());
+                        } catch (AwsException e) {
+                            job.setState("FAILED");
+                            job.setStatusMessage(e.getMessage());
+                            job.setCompletionDate(now);
+                            jobStore.put(jobId, job);
+                            LOG.infov("Backup job {0} failed: {1}", jobId, e.getMessage());
+                            return;
+                        }
+                    }
                     RecoveryPoint rp = new RecoveryPoint();
                     rp.setRecoveryPointArn(rpArn);
                     rp.setBackupVaultName(vaultName);
@@ -1315,7 +1489,7 @@ public class BackupService {
                     rp.setStatus("COMPLETED");
                     rp.setCreationDate(job.getCreationDate());
                     rp.setCompletionDate(now);
-                    rp.setBackupSizeInBytes(0L);
+                    rp.setBackupSizeInBytes(size);
                     rp.setLifecycle(job.getRecoveryPointLifecycle());
                     rp.setCalculatedLifecycle(calculatedLifecycle(job.getCreationDate(), job.getRecoveryPointLifecycle()));
                     rp.setStorageClass("WARM");
@@ -1331,8 +1505,8 @@ public class BackupService {
                 job.setPercentDone("100.0");
                 job.setCompletionDate(now);
                 job.setRecoveryPointArn(rpArn);
-                job.setBackupSizeInBytes(0L);
-                job.setBytesTransferred(0L);
+                job.setBackupSizeInBytes(size);
+                job.setBytesTransferred(size);
                 jobStore.put(jobId, job);
                 LOG.infov("Backup job {0} completed, recovery point: {1}", jobId, rpArn);
                 notifyJobCompleted(job, vaultName, region, notificationKey);

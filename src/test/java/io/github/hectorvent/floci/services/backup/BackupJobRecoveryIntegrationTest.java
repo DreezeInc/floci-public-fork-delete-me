@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
 
 @QuarkusTest
 class BackupJobRecoveryIntegrationTest {
@@ -31,12 +32,13 @@ class BackupJobRecoveryIntegrationTest {
     @Inject ObjectMapper mapper;
     @Inject SnsService sns;
     @Inject RamService ram;
+    private final S3RecoveryPointContents s3Contents = mock(S3RecoveryPointContents.class);
 
     @Test
     void restartRestoresJobsInEveryAccountAndTheirOriginalRegion() {
         String vaultName = "restart-" + UUID.randomUUID();
         List<String> accounts = List.of("811111111111", "822222222222");
-        BackupService first = new BackupService(storage, config, resolver, mapper, sns, ram);
+        BackupService first = new BackupService(storage, config, resolver, mapper, sns, ram, s3Contents);
         AccountAwareStorageBackend<BackupJob> jobs = storage.create("backup", "backup-jobs.json",
                 new TypeReference<Map<String, BackupJob>>() {});
         try {
@@ -51,7 +53,7 @@ class BackupJobRecoveryIntegrationTest {
         } finally {
             first.shutdown();
         }
-        BackupService restarted = new BackupService(storage, config, resolver, mapper, sns, ram);
+        BackupService restarted = new BackupService(storage, config, resolver, mapper, sns, ram, s3Contents);
         try {
             restarted.resumeJobs();
             for (String account : accounts) {
