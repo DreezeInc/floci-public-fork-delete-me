@@ -270,6 +270,9 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
             "fingerprint", "key-name", "key-pair-id", "key-type", "tag-key");
     /** The longest key-pair name CreateKeyPair and ImportKeyPair take. */
     private static final int MAX_KEY_NAME_LENGTH = 255;
+    // AWS documents only tag:<key> here; tag-key and tag-value are kept as on the other tag-aware calls.
+    private static final Set<String> SECURITY_GROUP_RULE_FILTERS = Set.of(
+            "group-id", "security-group-rule-id", "tag-key", "tag-value");
     private static final Set<String> AVAILABILITY_ZONE_FILTERS = Set.of(
             "group-long-name", "group-name", "message", "opt-in-status",
             "parent-zone-id", "parent-zone-name", "region-name", "state",
@@ -1681,7 +1684,8 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
                         acl.getAssociations().stream().anyMatch(a -> values.contains(a.getSubnetId()));
                 case "association.network-acl-association-id" ->
                         acl.getAssociations().stream().anyMatch(a -> values.contains(a.getNetworkAclAssociationId()));
-                default -> true;
+                // tag:<key>, tag-key and tag-value
+                default -> matchesFilter(acl, f.getKey(), values, acl.getRegion());
             };
             if (!matches) {
                 return false;
@@ -8043,6 +8047,7 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
         String groupId = rule.getGroupId();
         if (groupId == null) {
             securityGroupRules.delete(key(region, securityGroupRuleId));
+            removeTags(region, securityGroupRuleId);
             return true;
         }
         synchronized (lockFor(key(region, groupId))) {
@@ -8050,6 +8055,7 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
                 return false;
             }
             removeRuleFromGroup(region, rule);
+            removeTags(region, securityGroupRuleId);
         }
         reconcileAfterRuleRemoval(region, groupId, rule.isEgress());
         return true;
@@ -8231,6 +8237,33 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
                 .filter(r -> groupIds.isEmpty() || groupIds.contains(r.getGroupId()))
                 .filter(r -> ruleIds.isEmpty() || ruleIds.contains(r.getSecurityGroupRuleId()))
                 .collect(Collectors.toList());
+    }
+
+    public List<SecurityGroupRule> describeSecurityGroupRules(String region, List<String> ruleIds,
+                                                              Map<String, List<String>> filters) {
+        return describeSecurityGroupRulesFiltered(region, ruleIds, filterList(filters));
+    }
+
+    /**
+     * DescribeSecurityGroupRules. Rule ids can arrive as the SecurityGroupRuleId.N parameter or the
+     * {@code security-group-rule-id} filter; filters are conjunctive with the parameter and with each
+     * other, so each one narrows the rules the parameter names, and an id filter without values
+     * narrows nothing. A filter name outside {@link #SECURITY_GROUP_RULE_FILTERS} is refused.
+     */
+    List<SecurityGroupRule> describeSecurityGroupRulesFiltered(String region, List<String> ruleIds,
+                                                               List<Map.Entry<String, List<String>>> filters) {
+        requireSupportedFilters(filterNames(filters), SECURITY_GROUP_RULE_FILTERS);
+        List<List<String>> ruleIdFilters = filterValues(filters, "security-group-rule-id");
+        List<List<String>> groupIdFilters = filterValues(filters, "group-id");
+        List<Map.Entry<String, List<String>>> tagFilters = filters.stream()
+                .filter(filter -> filter.getKey().startsWith("tag:") || "tag-key".equals(filter.getKey())
+                        || "tag-value".equals(filter.getKey()))
+                .toList();
+        return describeSecurityGroupRules(region, List.of(), ruleIds).stream()
+                .filter(rule -> everyFilterContains(ruleIdFilters, rule.getSecurityGroupRuleId()))
+                .filter(rule -> everyFilterContains(groupIdFilters, rule.getGroupId()))
+                .filter(rule -> matchesFilters(rule, tagFilters, region))
+                .toList();
     }
 
     public void modifySecurityGroupRules(String region, String groupId, List<Map<String, String>> ruleUpdates) {
@@ -14214,6 +14247,8 @@ public class Ec2Service implements ContainerTeardown, ResourceProvider, Resettab
         if (resource instanceof Vpc vpc) return vpc.getTags();
         if (resource instanceof Subnet subnet) return subnet.getTags();
         if (resource instanceof SecurityGroup sg) return sg.getTags();
+        if (resource instanceof SecurityGroupRule rule) return rule.getTags();
+        if (resource instanceof NetworkAcl acl) return acl.getTags();
         if (resource instanceof InternetGateway igw) return igw.getTags();
         if (resource instanceof EgressOnlyInternetGateway eigw) return eigw.getTags();
         if (resource instanceof RouteTable rt) return rt.getTags();

@@ -337,7 +337,7 @@ private gateway lifecycles are not modelled.
 | RevokeSecurityGroupIngress | Removes inbound permissions. Matches on protocol and port range only, so it removes every permission on that port regardless of source. Protocol numbers and names match each other (`6` is `tcp`), and an all-traffic (`-1`) permission matches whatever ports the request names, as on AWS (Terraform revokes the default egress rule as `-1` with ports `0`). |
 | RevokeSecurityGroupEgress | Removes outbound permissions, matched the same way as the inbound call. |
 | GetSecurityGroupsForVpc | Lists the security groups belonging to one VPC, with the same filters as the describe call. |
-| DescribeSecurityGroupRules | Lists stored security group rules. |
+| DescribeSecurityGroupRules | Lists stored security group rules with their tags, which come from `TagSpecification` (`ResourceType=security-group-rule`) on the authorize calls or from `CreateTags`. Narrows by `SecurityGroupRuleId.N` and the filters `group-id`, `security-group-rule-id`, `tag:<key>`, `tag-key` and `tag-value`; any other filter name is rejected with `InvalidParameterValue`. |
 | ModifySecurityGroupRules | Updates supported fields on security group rules. |
 | UpdateSecurityGroupRuleDescriptionsIngress | Updates descriptions on matching inbound security group rules. |
 | UpdateSecurityGroupRuleDescriptionsEgress | Updates descriptions on matching outbound security group rules. |
@@ -535,7 +535,7 @@ matching how AWS itself responds.
 | Action | Description |
 |--------|-------------|
 | CreateNetworkAcl | Creates a network ACL in a VPC, with `network-acl` tags from `TagSpecification`. |
-| DescribeNetworkAcls | Lists or returns stored network ACLs. |
+| DescribeNetworkAcls | Lists or returns stored network ACLs, narrowed by the `tag:<key>`, `tag-key` and `tag-value` filters among others. |
 | DeleteNetworkAcl | Deletes a network ACL from the local EC2 store. |
 | CreateNetworkAclEntry | Adds an entry to a network ACL. The entry keeps whichever of `CidrBlock` or `Ipv6CidrBlock` was supplied, and `DescribeNetworkAcls` returns it under the same name. `IcmpTypeCode` is kept for ICMP (`1`) and ICMPv6 (`58`) entries only. |
 | ReplaceNetworkAclEntry | Replaces an entry in a network ACL, including its `CidrBlock` or `Ipv6CidrBlock` and, for ICMP and ICMPv6 entries, its `IcmpTypeCode`. |
