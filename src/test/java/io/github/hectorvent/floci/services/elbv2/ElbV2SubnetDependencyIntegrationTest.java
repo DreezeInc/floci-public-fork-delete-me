@@ -214,7 +214,7 @@ class ElbV2SubnetDependencyIntegrationTest {
         doAnswer(invocation -> {
             creating.countDown();
             return invocation.callRealMethod();
-        }).when(elbService).createLoadBalancer(eq(REGION), anyString(),
+        }).when(elbService).createLoadBalancerWithSubnetMappings(eq(REGION), anyString(),
                 any(), eq("application"), any(),
                 anyList(), any(), anyMap());
         try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
