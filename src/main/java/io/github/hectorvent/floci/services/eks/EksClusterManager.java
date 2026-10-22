@@ -683,8 +683,10 @@ public class EksClusterManager
         List<String> serverArgs = buildServerArgs(
                 config.services().eks().disableCni(),
                 defaultStorageClass,
+                config.services().eks().loadBalancerServices(),
                 serviceCidr,
-                clusterCidr);
+                clusterCidr,
+                Optional.empty());
         String endpointHost = endpointHost();
         if (!"localhost".equals(endpointHost)) {
             serverArgs.add("--tls-san=" + endpointHost);
@@ -1584,12 +1586,24 @@ public class EksClusterManager
 
     static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
             String serviceCidr, String clusterCidr, Optional<String> endpointHost) {
+        return buildServerArgs(disableCni, defaultStorageClass, false, serviceCidr, clusterCidr, endpointHost);
+    }
+
+    /**
+     * {@code loadBalancerServices} disables k3s's bundled service load balancer, which would
+     * otherwise answer every {@code LoadBalancer} Service with the node's own address.
+     */
+    static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
+            boolean loadBalancerServices, String serviceCidr, String clusterCidr, Optional<String> endpointHost) {
         List<String> serverArgs = new ArrayList<>(List.of("server",
                 "--disable=traefik",
                 "--tls-san=localhost"));
         endpointHost.filter(host -> !host.isBlank()).ifPresent(host -> serverArgs.add("--tls-san=" + host));
         if (!defaultStorageClass) {
             serverArgs.add("--disable=local-storage");
+        }
+        if (loadBalancerServices) {
+            serverArgs.add("--disable=servicelb");
         }
         if (disableCni) {
             serverArgs.add("--flannel-backend=none");
@@ -2776,6 +2790,7 @@ public class EksClusterManager
             ContainerIps containerIps = resolveContainerIps(containerId);
             Instance nodeInstance = synthesizeClusterNodeInstance(cluster, containerIps.primaryIp(), region, accountId);
             nodeInstance.setDockerContainerId(containerId);
+            nodeInstance.setContainerBridgeIp(containerIps.primaryIp());
             clusterNodeInstances.put(clusterResourceName(cluster), new ClusterNodeRecord(accountId, region, nodeInstance));
             registerClusterNodeVpc(cluster, accountId, region, containerIps.allIps());
             rememberClusterNodeAddresses(clusterResourceName(cluster), containerIps.allIps());
