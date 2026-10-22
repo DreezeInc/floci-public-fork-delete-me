@@ -331,11 +331,11 @@ private gateway lifecycles are not modelled.
 |--------|-------------|
 | CreateSecurityGroup | Creates a security group in a VPC, the default VPC when `VpcId` is absent or empty. `DryRun=true` is answered with `DryRunOperation` and creates nothing. A tag specification error or a missing `GroupName`, `GroupDescription` or VPC keeps its own error; a taken group name is checked only without `DryRun`. |
 | DescribeSecurityGroups | Lists or returns stored security groups. |
-| DeleteSecurityGroup | Deletes a security group from the local EC2 store. |
-| AuthorizeSecurityGroupIngress | Adds inbound permissions. Sources may be IPv4 ranges, IPv6 ranges, or another security group (`UserIdGroupPairs`, sent on the wire as `Groups`); prefix list sources are not stored. One rule is stored per source, each carrying its own description. |
+| DeleteSecurityGroup | Deletes a security group together with its rules and the tags on both. |
+| AuthorizeSecurityGroupIngress | Adds inbound permissions. Sources may be IPv4 ranges, IPv6 ranges, prefix lists, or another security group (`UserIdGroupPairs`, sent on the wire as `Groups`). One rule is stored per source, each carrying its own description. |
 | AuthorizeSecurityGroupEgress | Adds outbound permissions, with the same source types as the inbound call. |
-| RevokeSecurityGroupIngress | Removes inbound permissions. Matches on protocol and port range only, so it removes every permission on that port regardless of source. Protocol numbers and names match each other (`6` is `tcp`), and an all-traffic (`-1`) permission matches whatever ports the request names, as on AWS (Terraform revokes the default egress rule as `-1` with ports `0`). |
-| RevokeSecurityGroupEgress | Removes outbound permissions, matched the same way as the inbound call. |
+| RevokeSecurityGroupIngress | Removes the inbound rules named by `SecurityGroupRuleId.N`, by `IpPermissions`, or both. A permission matches on protocol, port range and source, so other sources on the same ports stay; one naming no source removes every permission on its protocol and ports. Protocol numbers and names match each other (`6` is `tcp`), and an all-traffic (`-1`) permission matches whatever ports the request names, as on AWS (Terraform revokes the default egress rule as `-1` with ports `0`). Revoked rules leave `DescribeSecurityGroupRules`, `DescribeSecurityGroups` and `DescribeTags`, and authorizing the same permission again creates a new rule. The response lists them in `revokedSecurityGroupRuleSet` and each requested source the group does not have in `unknownIpPermissionSet`. A rule ID that is not an inbound rule of the group fails the whole call with `InvalidSecurityGroupRuleId.NotFound`. An unmatched permission is reported as unknown in every VPC, where AWS rejects it with `InvalidPermission.NotFound` outside the default VPC. |
+| RevokeSecurityGroupEgress | Removes outbound rules, matched and reported the same way as the inbound call. |
 | GetSecurityGroupsForVpc | Lists the security groups belonging to one VPC, with the same filters as the describe call. |
 | DescribeSecurityGroupRules | Lists stored security group rules with their tags, which come from `TagSpecification` (`ResourceType=security-group-rule`) on the authorize calls or from `CreateTags`. Narrows by `SecurityGroupRuleId.N` and the filters `group-id`, `security-group-rule-id`, `tag:<key>`, `tag-key` and `tag-value`; any other filter name is rejected with `InvalidParameterValue`. |
 | ModifySecurityGroupRules | Updates supported fields on security group rules. |
@@ -1116,7 +1116,7 @@ A standalone ENI created via `CreateNetworkInterface` can also be handed to `Run
 | Action | Description |
 |--------|-------------|
 | CreateVolume | Creates an EBS volume record, empty or from a snapshot (`SnapshotId`), optionally encrypted under `KmsKeyId`. |
-| DescribeVolumes | Lists or returns stored EBS volume records. |
+| DescribeVolumes | Lists or returns stored EBS volume records with their tags, set at creation or later through `CreateTags` and `DeleteTags`, which the `tag:<key>`, `tag-key` and `tag-value` filters match. |
 | DeleteVolume | Deletes an EBS volume record. |
 | ModifyVolume | Modifies size, type, IOPS, throughput, or multi-attach settings of an EBS volume record. |
 | DescribeVolumesModifications | Reports the current modification state for EBS volumes, filterable by volume ID and state. |
