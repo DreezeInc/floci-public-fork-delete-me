@@ -1115,7 +1115,7 @@ A standalone ENI created via `CreateNetworkInterface` can also be handed to `Run
 
 | Action | Description |
 |--------|-------------|
-| CreateVolume | Creates an EBS volume record. |
+| CreateVolume | Creates an EBS volume record, empty or from a snapshot (`SnapshotId`), optionally encrypted under `KmsKeyId`. |
 | DescribeVolumes | Lists or returns stored EBS volume records. |
 | DeleteVolume | Deletes an EBS volume record. |
 | ModifyVolume | Modifies size, type, IOPS, throughput, or multi-attach settings of an EBS volume record. |
@@ -1123,7 +1123,7 @@ A standalone ENI created via `CreateNetworkInterface` can also be handed to `Run
 | AttachVolume | Attaches a volume to an instance at the requested device; returns the attachment in `attaching` state. |
 | DetachVolume | Detaches a volume from an instance, optionally forced; returns the attachment in `detaching` state. |
 
-An encrypted volume reports the KMS key it was created with as `kmsKeyId` in `CreateVolume` and `DescribeVolumes`: the `KmsKeyId` of the `CreateVolume` request or of the launch's block device mapping (a launch template's included), or else the region's default EBS key as `GetEbsDefaultKmsKeyId` reported it then (`alias/aws/ebs` until `ModifyEbsDefaultKmsKeyId` sets another). Keys are kept as given (a key id, key ARN, alias name or alias ARN) and are not checked against KMS; AWS reports the key's ARN, and fails the volume later when the key cannot be used. A volume that is not encrypted has no key. AWS refuses a `KmsKeyId` without `Encrypted=true`, even with encryption by default on; Floci accepts it, and the volume keeps the key only when encryption by default, or for a launch volume an encrypted snapshot, makes it encrypted. A launch volume encrypted only by its snapshot and naming no key gets the region's default key, where AWS keeps the snapshot's: snapshots record no key. Volumes stored before Floci kept keys report none.
+An encrypted volume reports the KMS key it was created with as `kmsKeyId` in `CreateVolume` and `DescribeVolumes`: the `KmsKeyId` of the `CreateVolume` request or of the launch's block device mapping (a launch template's included), or else the region's default EBS key as `GetEbsDefaultKmsKeyId` reported it then (`alias/aws/ebs` until `ModifyEbsDefaultKmsKeyId` sets another). Keys are kept as given (a key id, key ARN, alias name or alias ARN) and are not checked against KMS; AWS reports the key's ARN, and fails the volume later when the key cannot be used. A volume that is not encrypted has no key. AWS refuses a `KmsKeyId` without `Encrypted=true`, even with encryption by default on; Floci accepts it, and the volume keeps the key only when encryption by default or an encrypted snapshot makes it encrypted. A volume `CreateVolume` restores from an encrypted snapshot without naming a key takes the snapshot's key; a launch volume encrypted only by its snapshot and naming no key gets the region's default key, where AWS keeps the snapshot's. Volumes stored before Floci kept keys report none.
 
 When `floci.services.ec2.volume-block-devices` is enabled (the default), attached EBS volumes are backed by real Linux loop devices inside running instance containers and synthesized EKS cluster node containers:
 - **Storage mechanism**: Backing sparse raw image files are allocated in Floci storage under `floci-aws-ec2-volumes` (named volume or host path). A privileged helper container (`floci-aws-ec2-volume-helper`, running `floci.services.ec2.volume-helper-image`, default `alpine:3.21`) manages Linux loop devices via `losetup`. It starts on the first volume operation and is removed when Floci shuts down; the backing files stay in storage.
@@ -1136,6 +1136,7 @@ When `floci.services.ec2.volume-block-devices` is enabled (the default), attache
 Validation matches AWS behavior:
 - Unknown volumes are rejected with `InvalidVolume.NotFound`.
 - Decreasing volume size is rejected with `InvalidParameterValue`.
+- `CreateVolume` from a snapshot defaults `Size` to the snapshot's size and rejects a smaller one with `InvalidParameterValue`. The snapshot may be one the caller owns or one another account shared with it; anything else is `InvalidSnapshot.NotFound`.
 - Unsupported parameters (such as `Throughput` on non-gp3 volumes or `Iops` on non-provisioned IOPS volume types) are rejected with `InvalidParameterCombination`.
 - When querying `DescribeVolumesModifications` with an explicit volume ID for an unmodified volume, the request fails with `InvalidVolumeModification.NotFound`. Listing or filtering without explicit IDs returns only modified volumes.
 
@@ -1143,7 +1144,22 @@ Validation matches AWS behavior:
 
 | Action | Description |
 |--------|-------------|
-| DescribeSnapshots | Lists or returns stored snapshots, filterable by id and owner. |
+| CreateSnapshot | Snapshots one EBS volume into the caller's account. |
+| CreateSnapshots | Snapshots every EBS volume attached to an instance, one snapshot per volume, honoring `ExcludeBootVolume`, `ExcludeDataVolumeIds` and `CopyTagsFromSource=volume`. |
+| CopySnapshot | Copies a snapshot into the caller's account in the request region, from any region and from any account that granted the caller `createVolumePermission`. |
+| DescribeSnapshots | Lists snapshots the caller can create volumes from, filterable by id, owner, restorable-by account and filters, with `MaxResults`/`NextToken` paging. |
+| DeleteSnapshot | Deletes a snapshot the caller owns. |
+| ModifySnapshotAttribute | Adds or removes `createVolumePermission` for account ids or the `all` group, in either the `OperationType`/`UserId`/`UserGroup` or the `CreateVolumePermission.Add`/`Remove` form. |
+| DescribeSnapshotAttribute | Returns `createVolumePermission` or `productCodes` (always empty). |
+| ResetSnapshotAttribute | Removes every `createVolumePermission` grant. |
+
+A snapshot is stored in the account that creates it, and `ownerId` carries that account. `CreateSnapshot`, `CreateSnapshots` and `CopySnapshot` report the new snapshot as `pending`; every later read reports it `completed` at `100%`, so the `snapshot_completed` waiter returns on its first poll. A copy's `volumeId` is `vol-ffffffff`, as on AWS, and its description defaults to `[Copied <id> from <region>]`. `storageTier` is always `standard`.
+
+Without `SnapshotIds`, `OwnerIds` or `RestorableByUserIds`, `DescribeSnapshots` returns every snapshot the caller can create a volume from: its own, those shared with its account, and public ones. `OwnerIds` takes account ids, `self` and `amazon`. `RestorableByUserIds` takes `all` (public), `self` (owned or shared with the caller) and account ids (owned snapshots shared with that account). Supported filters are `description`, `encrypted`, `owner-alias`, `owner-id`, `progress`, `snapshot-id`, `start-time`, `status`, `storage-tier`, `tag:<key>`, `tag-key`, `tag-value`, `volume-id` and `volume-size`. `MaxResults` must be at least 5, values above 1000 are capped, and combining it with `SnapshotIds` is `InvalidParameterCombination`. Tags are per account: an account sees only the tags it put on a snapshot, so the owner's tags do not show on a shared snapshot.
+
+A snapshot of an encrypted volume is encrypted with the volume's KMS key. `CopySnapshot` encrypts the copy when the source is encrypted, `Encrypted=true` or `KmsKeyId` is given, or encryption by default is on. The key is `KmsKeyId` when given; otherwise the source's key for a same-region copy of a snapshot the caller owns, and otherwise the region's EBS default key (`alias/aws/ebs` unless `ModifyEbsDefaultKmsKeyId` changed it). `CopySnapshot` resolves a key in the caller's account through [KMS](kms.md) and stores it as its ARN; one that does not exist, is disabled or is pending deletion is rejected with `InvalidParameterValue`. A key ARN in another account is accepted as given, since key policies are not evaluated.
+
+`ModifySnapshotAttribute` follows the AWS sharing rules: an encrypted snapshot cannot be made public, a snapshot encrypted with the AWS managed `aws/ebs` key cannot be shared with other accounts (both `InvalidParameter`), and adding `all` while snapshot block public access is on fails with `OperationNotPermitted`. Account ids must be 12 digits (`InvalidUserID.Malformed`) and the only group is `all`. `DeleteSnapshot` refuses a snapshot that a registered AMI still uses with `InvalidSnapshot.InUse`. Snapshots of another account, including shared ones, cannot be deleted or modified and read as `InvalidSnapshot.NotFound`.
 
 ### Flow Logs
 
@@ -1202,7 +1218,7 @@ An account that has never set a key reports `alias/aws/ebs`, the AWS-managed EBS
 
 This is an account-level setting scoped per region, not a resource, so there is no id and nothing to tag. A region that was never configured reads back `unblocked`. `EnableSnapshotBlockPublicAccess` accepts only `block-all-sharing` and `block-new-sharing`, and rejects `unblocked` with `InvalidParameterValue` the way AWS does: disabling goes through `DisableSnapshotBlockPublicAccess`, which returns the resulting `unblocked` rather than the prior state. A missing `State` is rejected with `MissingParameter`.
 
-Only `GetSnapshotBlockPublicAccessState` returns `managedBy`, and it always reports `account` because Floci has no declarative-policy layer that could take the setting over. Nothing here changes snapshot permissions: no snapshot's `createVolumePermission` is rewritten when the block goes on or off.
+Only `GetSnapshotBlockPublicAccessState` returns `managedBy`, and it always reports `account` because Floci has no declarative-policy layer that could take the setting over. Nothing here changes snapshot permissions: no snapshot's `createVolumePermission` is rewritten when the block goes on or off. While either block state is on, `ModifySnapshotAttribute` refuses to add the `all` group. Snapshots that were already public stay visible to other accounts under `block-all-sharing`.
 
 All three actions honor `DryRun`. A request that would otherwise succeed returns `DryRunOperation` with HTTP 412 and leaves the stored state untouched. `EnableSnapshotBlockPublicAccess` validates `State` first, so an invalid or missing `State` is still rejected on its own error even when `DryRun=true` is set.
 

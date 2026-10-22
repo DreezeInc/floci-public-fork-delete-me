@@ -21,6 +21,7 @@ public class Volume {
     private int iops;
     private Integer throughput;        // MiB/s; only meaningful for gp3 (null otherwise)
     private String snapshotId;
+    private String seedContentRef;
     private Instant createTime;
     private Boolean multiAttachEnabled;
     private String region;
@@ -58,6 +59,9 @@ public class Volume {
 
     public String getSnapshotId() { return snapshotId; }
     public void setSnapshotId(String snapshotId) { this.snapshotId = snapshotId; }
+
+    public String getSeedContentRef() { return seedContentRef; }
+    public void setSeedContentRef(String seedContentRef) { this.seedContentRef = seedContentRef; }
 
     public Instant getCreateTime() { return createTime; }
     public void setCreateTime(Instant createTime) { this.createTime = createTime; }
