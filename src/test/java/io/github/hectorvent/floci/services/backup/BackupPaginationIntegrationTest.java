@@ -149,12 +149,12 @@ class BackupPaginationIntegrationTest {
                 service.createBackupVault(name, null, null, Map.of(), REGION)));
         try {
             String token = RequestScopes.callAs(firstAccount, REGION, () ->
-                    service.listBackupVaults(REGION, null, 1, null).nextToken());
+                    service.listBackupVaults(REGION, null, null, 1, null).nextToken());
             assertNotNull(token);
 
             AwsException error = assertThrows(AwsException.class, () ->
                     RequestScopes.callAs(secondAccount, REGION, () ->
-                            service.listBackupVaults(REGION, null, 1, token)));
+                            service.listBackupVaults(REGION, null, null, 1, token)));
             assertEquals("InvalidParameterValueException", error.getErrorCode());
         } finally {
             RequestScopes.runAs(firstAccount, REGION, () -> firstNames.forEach(name ->

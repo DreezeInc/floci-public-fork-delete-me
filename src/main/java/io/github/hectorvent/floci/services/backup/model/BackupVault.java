@@ -19,6 +19,9 @@ public class BackupVault {
     @JsonProperty("BackupVaultArn")
     private String backupVaultArn;
 
+    @JsonProperty("EncryptionKeyType")
+    private String encryptionKeyType;
+
     @JsonProperty("EncryptionKeyArn")
     private String encryptionKeyArn;
 
@@ -83,6 +86,9 @@ public class BackupVault {
 
     public String getVaultId() { return vaultId; }
     public void setVaultId(String vaultId) { this.vaultId = vaultId; }
+
+    public String getEncryptionKeyType() { return encryptionKeyType; }
+    public void setEncryptionKeyType(String encryptionKeyType) { this.encryptionKeyType = encryptionKeyType; }
 
     public String getEncryptionKeyArn() { return encryptionKeyArn; }
     public void setEncryptionKeyArn(String encryptionKeyArn) { this.encryptionKeyArn = encryptionKeyArn; }

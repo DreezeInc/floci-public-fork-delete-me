@@ -12,6 +12,7 @@ import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.backup.model.BackupJob;
 import io.github.hectorvent.floci.services.backup.model.BackupVault;
 import io.github.hectorvent.floci.services.backup.model.RecoveryPoint;
+import io.github.hectorvent.floci.services.ram.RamService;
 import io.github.hectorvent.floci.services.sns.SnsService;
 import io.github.hectorvent.floci.services.sqs.model.MessageAttributeValue;
 import org.junit.jupiter.api.Test;
@@ -485,7 +486,7 @@ class BackupJobRecoveryTest {
             RegionResolver resolver = new RegionResolver("us-east-1", ACCOUNT);
             ObjectMapper mapper = new ObjectMapper();
             SnsService sns = mock(SnsService.class);
-            BackupService first = new BackupService(firstStorage, config, resolver, mapper, sns);
+            BackupService first = new BackupService(firstStorage, config, resolver, mapper, sns, mock(RamService.class));
             String jobId;
             String capturedId;
             long capturedDate;
@@ -506,7 +507,7 @@ class BackupJobRecoveryTest {
             JsonNode disk = mapper.readTree(path.resolve("backup-jobs.json").toFile()).path(ACCOUNT + "/" + jobId);
             assertEquals(capturedId, disk.path("FlociVaultId").asText());
             StorageFactory reloadedStorage = new StorageFactory(config, access);
-            BackupService restarted = new BackupService(reloadedStorage, config, resolver, mapper, sns);
+            BackupService restarted = new BackupService(reloadedStorage, config, resolver, mapper, sns, mock(RamService.class));
             try {
                 assertEquals(capturedId, restarted.describeBackupJob(jobId).getVaultId());
                 assertEquals(capturedId, restarted.describeBackupVault(VAULT, REGION).getVaultId());
@@ -603,7 +604,7 @@ class BackupJobRecoveryTest {
         }
 
         private BackupService newService() {
-            return new BackupService(storage, config, resolver, mapper, sns);
+            return new BackupService(storage, config, resolver, mapper, sns, mock(RamService.class));
         }
 
         private BackupVault vault() {

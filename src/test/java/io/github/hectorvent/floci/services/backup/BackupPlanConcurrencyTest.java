@@ -7,6 +7,7 @@ import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.core.storage.AccountAwareStorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.backup.model.BackupPlan;
+import io.github.hectorvent.floci.services.ram.RamService;
 import io.github.hectorvent.floci.services.sns.SnsService;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -36,7 +37,7 @@ class BackupPlanConcurrencyTest {
         EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
         when(config.services().backup().jobCompletionDelaySeconds()).thenReturn(3600);
         BackupService service = new BackupService(storage, config, new RegionResolver("eu-west-2", account),
-                new ObjectMapper(), mock(SnsService.class));
+                new ObjectMapper(), mock(SnsService.class), mock(RamService.class));
         CountDownLatch writing = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         try {

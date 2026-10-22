@@ -8,6 +8,7 @@ import io.github.hectorvent.floci.core.common.RequestScopes;
 import io.github.hectorvent.floci.core.storage.AccountAwareStorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.backup.model.BackupJob;
+import io.github.hectorvent.floci.services.ram.RamService;
 import io.github.hectorvent.floci.services.sns.SnsService;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -29,12 +30,13 @@ class BackupJobRecoveryIntegrationTest {
     @Inject RegionResolver resolver;
     @Inject ObjectMapper mapper;
     @Inject SnsService sns;
+    @Inject RamService ram;
 
     @Test
     void restartRestoresJobsInEveryAccountAndTheirOriginalRegion() {
         String vaultName = "restart-" + UUID.randomUUID();
         List<String> accounts = List.of("811111111111", "822222222222");
-        BackupService first = new BackupService(storage, config, resolver, mapper, sns);
+        BackupService first = new BackupService(storage, config, resolver, mapper, sns, ram);
         AccountAwareStorageBackend<BackupJob> jobs = storage.create("backup", "backup-jobs.json",
                 new TypeReference<Map<String, BackupJob>>() {});
         try {
@@ -49,7 +51,7 @@ class BackupJobRecoveryIntegrationTest {
         } finally {
             first.shutdown();
         }
-        BackupService restarted = new BackupService(storage, config, resolver, mapper, sns);
+        BackupService restarted = new BackupService(storage, config, resolver, mapper, sns, ram);
         try {
             restarted.resumeJobs();
             for (String account : accounts) {

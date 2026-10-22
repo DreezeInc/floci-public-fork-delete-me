@@ -1868,6 +1868,32 @@ class BackupIntegrationTest {
         .then().body("__type", equalTo("ResourceNotFoundException"));
     }
 
+    private static String startCopyIntoAirGappedVault(String sourceVault, String airGappedVault) {
+        given().header("Authorization", AUTH).contentType("application/json").body("{}")
+        .when().put("/backup-vaults/" + sourceVault).then().statusCode(200);
+        String backupJob = given().header("Authorization", AUTH).contentType("application/json")
+            .body("""
+                {"BackupVaultName": "%s", "ResourceArn": "%s", "IamRoleArn": "%s"}
+                """.formatted(sourceVault, RESOURCE_ARN, IAM_ROLE))
+        .when().put("/backup-jobs").then().statusCode(200).extract().path("BackupJobId");
+        awaitJobCompleted(backupJob);
+        String sourcePoint = given().header("Authorization", AUTH)
+        .when().get("/backup-jobs/" + backupJob).then().statusCode(200).extract().path("RecoveryPointArn");
+        return given().header("Authorization", AUTH).contentType("application/json")
+            .body("""
+                {"RecoveryPointArn": "%s", "SourceBackupVaultName": "%s",
+                 "DestinationBackupVaultArn": "arn:aws:backup:us-east-1:000000000000:backup-vault:%s",
+                 "IamRoleArn": "%s", "Lifecycle": {"DeleteAfterDays": 14}}
+                """.formatted(sourcePoint, sourceVault, airGappedVault, IAM_ROLE))
+        .when().put("/copy-jobs").then().statusCode(200).extract().path("CopyJobId");
+    }
+
+    private static void awaitCopyJobEnded(String copyJobId) {
+        await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(25))
+            .until(() -> List.of("COMPLETED", "FAILED").contains(given().header("Authorization", AUTH)
+                .when().get("/copy-jobs/" + copyJobId).then().statusCode(200).extract().path("CopyJob.State")));
+    }
+
     @Test
     @Order(199)
     void anAirGappedVaultRefusesToDeleteARecoveryPointInsideMinRetention() {
@@ -1879,22 +1905,13 @@ class BackupIntegrationTest {
             .body("{\"MinRetentionDays\":7,\"MaxRetentionDays\":30}")
         .when().put("/logically-air-gapped-backup-vaults/" + vault).then().statusCode(200);
 
-        String jid = given().header("Authorization", AUTH).contentType("application/json")
-            .body("""
-                {
-                  "BackupVaultName": "%s",
-                  "ResourceArn": "%s",
-                  "IamRoleArn": "%s",
-                  "Lifecycle": {"DeleteAfterDays": 14}
-                }
-                """.formatted(vault, RESOURCE_ARN, IAM_ROLE))
-        .when().put("/backup-jobs").then().statusCode(200).extract().path("BackupJobId");
+        String copyJob = startCopyIntoAirGappedVault("air-gapped-retention-source", vault);
 
-        awaitJobCompleted(jid);
+        awaitCopyJobEnded(copyJob);
         String rpArn = given().header("Authorization", AUTH)
-        .when().get("/backup-jobs/" + jid).then().statusCode(200)
-            .body("State", equalTo("COMPLETED"))
-            .extract().path("RecoveryPointArn");
+        .when().get("/copy-jobs/" + copyJob).then().statusCode(200)
+            .body("CopyJob.State", equalTo("COMPLETED"))
+            .extract().path("CopyJob.DestinationRecoveryPointArn");
 
         given().header("Authorization", AUTH)
         .when().delete("/backup-vaults/" + vault + "/recovery-points/" + rpArn)
@@ -1920,26 +1937,18 @@ class BackupIntegrationTest {
         given().header("Authorization", AUTH).contentType("application/json")
             .body("{\"MinRetentionDays\":7,\"MaxRetentionDays\":30}")
         .when().put("/logically-air-gapped-backup-vaults/" + vault).then().statusCode(200);
-        String oldJob = given().header("Authorization", AUTH).contentType("application/json")
-            .body("""
-                {"BackupVaultName": "%s", "ResourceArn": "%s", "IamRoleArn": "%s", "Lifecycle": {"DeleteAfterDays": 14}}
-                """.formatted(vault, RESOURCE_ARN, IAM_ROLE))
-        .when().put("/backup-jobs").then().statusCode(200).extract().path("BackupJobId");
+        String oldJob = startCopyIntoAirGappedVault("air-gapped-replaced-source", vault);
         given().header("Authorization", AUTH)
         .when().delete("/backup-vaults/" + vault).then().statusCode(204);
         given().header("Authorization", AUTH).contentType("application/json").body("{}")
         .when().put("/backup-vaults/" + vault).then().statusCode(200);
 
-        await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(25))
-            .until(() -> {
-                String state = given().header("Authorization", AUTH)
-                .when().get("/backup-jobs/" + oldJob).then().statusCode(200).extract().path("State");
-                return "FAILED".equals(state) || "COMPLETED".equals(state);
-            });
+        awaitCopyJobEnded(oldJob);
         given().header("Authorization", AUTH)
-        .when().get("/backup-jobs/" + oldJob).then().statusCode(200)
-            .body("State", equalTo("FAILED"))
-            .body("$", not(hasKey("RecoveryPointArn")));
+        .when().get("/copy-jobs/" + oldJob).then().statusCode(200)
+            .body("CopyJob.State", equalTo("FAILED"))
+            .body("CopyJob", not(hasKey("DestinationRecoveryPointArn")))
+            .body("CopyJob", not(hasKey("FlociVaultId")));
         given().header("Authorization", AUTH)
         .when().get("/backup-vaults/" + vault + "/recovery-points/").then().statusCode(200)
             .body("RecoveryPoints", empty());
