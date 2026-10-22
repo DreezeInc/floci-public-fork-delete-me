@@ -1497,9 +1497,15 @@ public class EksClusterManager
      */
     static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
             String serviceCidr, String clusterCidr) {
+        return buildServerArgs(disableCni, defaultStorageClass, serviceCidr, clusterCidr, Optional.empty());
+    }
+
+    static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
+            String serviceCidr, String clusterCidr, Optional<String> endpointHost) {
         List<String> serverArgs = new ArrayList<>(List.of("server",
                 "--disable=traefik",
                 "--tls-san=localhost"));
+        endpointHost.filter(host -> !host.isBlank()).ifPresent(host -> serverArgs.add("--tls-san=" + host));
         if (!defaultStorageClass) {
             serverArgs.add("--disable=local-storage");
         }

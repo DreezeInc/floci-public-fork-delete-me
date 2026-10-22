@@ -344,8 +344,7 @@ public class EksAddonService {
 
     public Update describeUpdate(Cluster cluster, String updateId, String addonName) {
         StoredUpdate stored = storedUpdate(cluster, updateId);
-        if (addonName != null && !addonName.isBlank()
-                && stored.addonName() != null && !stored.addonName().equalsIgnoreCase(addonName.trim())) {
+        if (!belongsToAddon(stored, addonName)) {
             throw new AwsException("ResourceNotFoundException",
                     "No update: " + updateId + " found for addon: " + addonName, 404);
         }
@@ -368,6 +367,25 @@ public class EksAddonService {
         return updatesStorage.get(prefix(cluster) + updateId)
                 .orElseThrow(() -> new AwsException("ResourceNotFoundException",
                         "No update: " + updateId + " found for cluster: " + cluster.getName(), 404));
+    }
+
+    public Optional<Update> findUpdate(Cluster cluster, String updateId, String addonName) {
+        return updatesStorage.get(prefix(cluster) + updateId)
+                .filter(stored -> belongsToAddon(stored, addonName))
+                .map(StoredUpdate::update);
+    }
+
+    public List<Update> listUpdates(Cluster cluster, String addonName) {
+        String p = prefix(cluster);
+        return updatesStorage.scan(key -> key.startsWith(p)).stream()
+                .filter(stored -> belongsToAddon(stored, addonName))
+                .map(StoredUpdate::update)
+                .toList();
+    }
+
+    private static boolean belongsToAddon(StoredUpdate stored, String addonName) {
+        return addonName == null || addonName.isBlank()
+                || stored.addonName() == null || stored.addonName().equalsIgnoreCase(addonName.trim());
     }
 
     public AddonVersionsPage describeAddonVersions(String addonName, String kubernetesVersion,
