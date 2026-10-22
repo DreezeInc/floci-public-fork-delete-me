@@ -123,6 +123,15 @@ public record ProvisionContext(CloudFormationTemplateEngine engine, String regio
         return engine.resolve(props.get(name));
     }
 
+    /** Resolves a property the schema marks required, failing the resource when it is absent or blank. */
+    public String resolveRequired(JsonNode props, String name, String resourceType) {
+        String value = resolveOptional(props, name);
+        if (value == null || value.isBlank()) {
+            throw new AwsException("ValidationError", resourceType + " requires a " + name + ".", 400);
+        }
+        return value;
+    }
+
     /**
      * Resolves an optional integer property, or null when it is absent or explicitly null. One an
      * intrinsic resolves to nothing stays null too: the engine resolves {@code AWS::NoValue} to blank,

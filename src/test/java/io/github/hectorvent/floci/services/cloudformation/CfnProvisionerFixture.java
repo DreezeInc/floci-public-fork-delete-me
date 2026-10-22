@@ -66,6 +66,7 @@ import io.github.hectorvent.floci.services.cloudformation.provisioners.Ec2VpcGat
 import io.github.hectorvent.floci.services.cloudformation.provisioners.EcrCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.EcsCapacityCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.EcsCfnProvisioner;
+import io.github.hectorvent.floci.services.cloudformation.provisioners.EksAddonCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.EksCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.ElastiCacheCfnProvisioner;
 import io.github.hectorvent.floci.services.cloudformation.provisioners.ElastiCacheServerlessCfnProvisioner;
@@ -134,6 +135,7 @@ import io.github.hectorvent.floci.services.ec2.Ec2Service;
 import io.github.hectorvent.floci.services.ec2.FlowLogService;
 import io.github.hectorvent.floci.services.ecr.EcrService;
 import io.github.hectorvent.floci.services.ecs.EcsService;
+import io.github.hectorvent.floci.services.eks.EksAddonService;
 import io.github.hectorvent.floci.services.eks.EksService;
 import io.github.hectorvent.floci.services.elasticache.ElastiCacheMemcachedService;
 import io.github.hectorvent.floci.services.elasticache.ElastiCacheServerlessService;
@@ -233,6 +235,7 @@ final class CfnProvisionerFixture {
         private Ec2Service ec2Service;
         private RdsService rdsService;
         private EksService eksService;
+        private EksAddonService eksAddonService;
         private CloudWatchLogsService logsService;
         private KinesisService kinesisService;
         private CloudWatchMetricsService cloudWatchMetricsService;
@@ -392,6 +395,11 @@ final class CfnProvisionerFixture {
             }
             if (eksService != null) {
                 discovered.add(new EksCfnProvisioner(eksService));
+            }
+            // The EKS sub-resource provisioners take the cluster lookup too; a test naming only the
+            // sub-service gets a provisioner that fails loudly rather than a silent stub.
+            if (eksAddonService != null) {
+                discovered.add(new EksAddonCfnProvisioner(eksService, eksAddonService));
             }
             if (elbV2Service != null) {
                 discovered.add(new ElbV2CfnProvisioner(elbV2Service));
@@ -713,6 +721,11 @@ final class CfnProvisionerFixture {
 
         public Builder eks(EksService v) {
             this.eksService = v;
+            return this;
+        }
+
+        public Builder eksAddons(EksAddonService v) {
+            this.eksAddonService = v;
             return this;
         }
 
