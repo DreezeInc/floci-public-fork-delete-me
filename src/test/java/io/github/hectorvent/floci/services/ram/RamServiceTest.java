@@ -882,6 +882,39 @@ class RamServiceTest {
         assertEquals(1, service.getResourceShareInvitations(ACCEPTER, List.of(), List.of(), "us-east-1").size());
     }
 
+    @Test
+    void sharedResourceIsGrantedOnlyAfterTheInvitationIsAccepted() {
+        ResourceShare share = service.createResourceShare(
+                "direct-share", List.of(ACCEPTER), List.of(TGW_ARN), false, "us-east-1", OWNER);
+        assertFalse(service.isResourceSharedWith(TGW_ARN, ACCEPTER));
+        assertTrue(service.resourceArnsSharedWith(ACCEPTER, "us-east-1").isEmpty());
+
+        String invitationArn = service.getResourceShareInvitations(ACCEPTER, List.of(), List.of(), "us-east-1")
+                .get(0).resourceShareInvitationArn();
+        service.acceptResourceShareInvitation(invitationArn, ACCEPTER, "us-east-1");
+
+        assertTrue(service.isResourceSharedWith(TGW_ARN, ACCEPTER));
+        assertEquals(List.of(TGW_ARN), service.resourceArnsSharedWith(ACCEPTER, "us-east-1"));
+        assertFalse(service.isResourceSharedWith(TGW_ARN, "123456789012"));
+        assertFalse(service.isResourceSharedWith(TGW_ARN, OWNER));
+        assertTrue(service.resourceArnsSharedWith(ACCEPTER, "eu-west-1").isEmpty());
+
+        service.deleteResourceShare(share.getResourceShareArn(), OWNER, "us-east-1");
+        assertFalse(service.isResourceSharedWith(TGW_ARN, ACCEPTER));
+    }
+
+    @Test
+    void aShareCannotGrantAResourceItsOwnerDoesNotOwn() {
+        String foreignTgw = "arn:aws:ec2:us-east-1:123456789012:transit-gateway/tgw-foreign";
+        service.createResourceShare(
+                "foreign-share", List.of(ACCEPTER), List.of(foreignTgw), false, "us-east-1", OWNER);
+        String invitationArn = service.getResourceShareInvitations(ACCEPTER, List.of(), List.of(), "us-east-1")
+                .get(0).resourceShareInvitationArn();
+        service.acceptResourceShareInvitation(invitationArn, ACCEPTER, "us-east-1");
+
+        assertFalse(service.isResourceSharedWith(foreignTgw, ACCEPTER));
+    }
+
     private static void assertInvalidParameter(Executable read) {
         AwsException error = assertThrows(AwsException.class, read);
         assertEquals("InvalidParameterException", error.getErrorCode());

@@ -74,6 +74,8 @@ public class RamService {
     private static final String RESOURCE_SHARE_PREFIX = "resource-share/";
     /** An AWS account id, as opposed to an organization/OU principal ARN. */
     private static final Pattern ACCOUNT_ID_PRINCIPAL = Pattern.compile("\\d{12}");
+    private static final Set<String> DISCOVERABLE_INVITATION_STATUSES = Set.of("PENDING", "ACCEPTED");
+    private static final Set<String> GRANTING_INVITATION_STATUSES = Set.of("ACCEPTED");
 
     private final StorageFactory storageFactory;
     private final OrganizationsService organizationsService;
@@ -509,6 +511,40 @@ public class RamService {
      * default AWS managed permission for that type, so one summary is returned per distinct type.
      * Readable by the owner and by an account the share is visible to, like the other reads.
      */
+    /** A pending invitation keeps a share discoverable but grants nothing until it is accepted. */
+    public boolean isResourceSharedWith(String resourceArn, String callerAccountId) {
+        if (!isValidArn(resourceArn)) {
+            return false;
+        }
+        String region = AwsArnUtils.parse(resourceArn).region();
+        return sharesIn(region).stream().anyMatch(share -> grants(share, resourceArn, callerAccountId));
+    }
+
+    /** Every resource ARN in {@code region} that RAM grants the caller access to. */
+    public List<String> resourceArnsSharedWith(String callerAccountId, String region) {
+        Set<String> arns = new LinkedHashSet<>();
+        for (ResourceShare share : sharesIn(region)) {
+            for (String resourceArn : share.getResourceArns()) {
+                if (grants(share, resourceArn, callerAccountId)) {
+                    arns.add(resourceArn);
+                }
+            }
+        }
+        return List.copyOf(arns);
+    }
+
+    private boolean grants(ResourceShare share, String resourceArn, String callerAccountId) {
+        if (!"ACTIVE".equals(share.getStatus())
+                || share.getOwningAccountId().equals(callerAccountId)
+                || !share.getResourceArns().contains(resourceArn)
+                || !isValidArn(resourceArn)
+                || !share.getOwningAccountId().equals(AwsArnUtils.parse(resourceArn).accountId())) {
+            return false;
+        }
+        return share.getPrincipals().stream().anyMatch(principal ->
+                isVisibleToPrincipal(share, principal, callerAccountId, GRANTING_INVITATION_STATUSES));
+    }
+
     public List<SharePermission> listResourceSharePermissions(String resourceShareArn,
                                                               String callerAccountId, String region) {
         if (resourceShareArn == null || resourceShareArn.isBlank()) {
@@ -693,8 +729,8 @@ public class RamService {
         if (owned) {
             return false;
         }
-        return share.getPrincipals().stream()
-                .anyMatch(principal -> isVisibleToPrincipal(share, principal, callerAccountId));
+        return share.getPrincipals().stream().anyMatch(principal ->
+                isVisibleToPrincipal(share, principal, callerAccountId, DISCOVERABLE_INVITATION_STATUSES));
     }
 
     private boolean isConsumableShare(ResourceShare share, String callerAccountId,
@@ -705,7 +741,8 @@ public class RamService {
                 && (resourceShareArns.isEmpty() || resourceShareArns.contains(share.getResourceShareArn()));
     }
 
-    private boolean isVisibleToPrincipal(ResourceShare share, String principal, String callerAccountId) {
+    private boolean isVisibleToPrincipal(ResourceShare share, String principal, String callerAccountId,
+                                         Set<String> liveInvitationStatuses) {
         if (ACCOUNT_ID_PRINCIPAL.matcher(principal).matches()) {
             if (!principal.equals(callerAccountId)) {
                 return false;
@@ -716,8 +753,7 @@ public class RamService {
             boolean hasLiveInvitation = allInvitations().stream()
                     .anyMatch(candidate -> candidate.resourceShareArn().equals(share.getResourceShareArn())
                             && candidate.receiverAccountId().equals(callerAccountId)
-                            && ("PENDING".equals(candidate.status())
-                            || "ACCEPTED".equals(candidate.status())));
+                            && liveInvitationStatuses.contains(candidate.status()));
             if (hasLiveInvitation) {
                 return true;
             }
