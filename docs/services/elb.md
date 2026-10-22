@@ -101,6 +101,7 @@ Gateway Load Balancer listeners require omitted `Port` and `Protocol` fields on 
 - HTTP listener sockets are preserved when listener actions change and are restarted only when socket-level settings such as port change.
 - Gateway listeners require `Protocol` and `Port` to be omitted on create and modify. Their control-plane response reports `GENEVE` without a port. CloudFormation preserves omitted gateway listener settings on create and update; other load balancer types retain their existing `HTTP` and port 80 defaults.
 - Instance targets are resolved through EC2 instance private addresses so local load balancer traffic can reach containers.
+- An `ip` target that is a pod address of a running EKS cluster in the target group's VPC is reached through a port that Floci forwards on the cluster's node container. See [EKS](eks.md#load-balancer-targets). Every other `ip` target is reached at its own address.
 - Target health starts in `initial` state with reason `Elb.RegistrationInProgress` and is updated by Floci's health checker when monitoring is active.
 - A newly registered Application Load Balancer target (HTTP/HTTPS target group or Lambda target) becomes healthy after its first successful check. Network and Gateway target groups retain `HealthyThresholdCount` for initial admission. The threshold applies to every group when recovering from `unhealthy`.
 - Health checks probe the target group's `HealthCheckPort` when it is a port number, and each target's own port when it is `traffic-port` (the default).
