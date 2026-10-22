@@ -43,6 +43,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -389,6 +393,32 @@ class Ec2ServicePersistenceTest {
         assertEquals(capture, copiedNow.getCreationSourceImageId());
         assertEquals(REGION, copiedNow.getCreationSourceImageRegion());
         assertEquals("ami-0abcdef1234567890", copiedNow.getSourceImageId());
+    }
+
+    @Test
+    void snapshotLockSurvivesRestart(@TempDir Path dir) {
+        Instant lockedAt = Instant.parse("2026-03-01T00:00:00Z");
+        Ec2Service first = newService(dir);
+        first.setClock(Clock.fixed(lockedAt, ZoneOffset.UTC));
+        first.registerImage(REGION, "locked-image", null, "x86_64", "/dev/sda1",
+                List.of(blockDeviceMapping("snap-locked", 8)));
+        first.lockSnapshot(REGION, "snap-locked", "compliance", 7, null, 24);
+
+        Ec2Service restarted = newService(dir);
+        restarted.setClock(Clock.fixed(lockedAt.plus(Duration.ofHours(25)), ZoneOffset.UTC));
+
+        Ec2Service.LockedSnapshot locked = restarted.describeLockedSnapshots(REGION, List.of("snap-locked"),
+                Map.of(), null, null).snapshots().getFirst();
+        assertEquals("compliance", locked.lockState());
+        assertEquals(7, locked.lock().getLockDuration());
+        assertEquals(24, locked.lock().getCoolOffPeriod());
+        assertEquals(lockedAt.plus(Duration.ofHours(24)), locked.lock().getCoolOffPeriodExpiresOn());
+        assertEquals(lockedAt, locked.lock().getLockCreatedOn());
+        assertEquals(lockedAt, locked.lock().getLockDurationStartTime());
+        assertEquals(lockedAt.plus(Duration.ofDays(7)), locked.lock().getLockExpiresOn());
+        AwsException refused = assertThrows(AwsException.class,
+                () -> restarted.unlockSnapshot(REGION, "snap-locked"));
+        assertEquals("SnapshotLocked", refused.getErrorCode());
     }
 
     @Test
