@@ -1,10 +1,13 @@
 package io.github.hectorvent.floci.services.eks;
 
+import io.github.hectorvent.floci.core.common.PaginatedResult;
 import io.github.hectorvent.floci.core.common.Pagination;
+import io.github.hectorvent.floci.core.common.RegionResolver;
+import io.github.hectorvent.floci.services.eks.model.AccessPolicy;
 import io.github.hectorvent.floci.services.eks.model.Addon;
 import io.github.hectorvent.floci.services.eks.model.AssociateAccessPolicyRequest;
-import io.github.hectorvent.floci.services.eks.model.AssociatedAccessPolicy;
 import io.github.hectorvent.floci.services.eks.model.AssociateIdentityProviderConfigRequest;
+import io.github.hectorvent.floci.services.eks.model.AssociatedAccessPolicy;
 import io.github.hectorvent.floci.services.eks.model.Cluster;
 import io.github.hectorvent.floci.services.eks.model.CreateAccessEntryRequest;
 import io.github.hectorvent.floci.services.eks.model.CreateAddonRequest;
@@ -17,6 +20,7 @@ import io.github.hectorvent.floci.services.eks.model.IdentityProviderConfigReque
 import io.github.hectorvent.floci.services.eks.model.Nodegroup;
 import io.github.hectorvent.floci.services.eks.model.PodIdentityAssociation;
 import io.github.hectorvent.floci.services.eks.model.Update;
+import io.github.hectorvent.floci.services.eks.model.UpdateAccessEntryRequest;
 import io.github.hectorvent.floci.services.eks.model.UpdateAddonRequest;
 import io.github.hectorvent.floci.services.eks.model.UpdateClusterConfigRequest;
 import io.github.hectorvent.floci.services.eks.model.UpdateClusterVersionRequest;
@@ -64,18 +68,21 @@ public class EksController {
     private final EksAddonService addons;
     private final EksClusterUpdateService clusterUpdates;
     private final EksIdentityProviderConfigService identityProviderConfigs;
+    private final RegionResolver regionResolver;
 
     @Inject
     public EksController(EksService eksService, EksAccessEntryService accessEntries,
                          EksPodIdentityAssociationService podIdentityAssociations,
                          EksAddonService addons, EksClusterUpdateService clusterUpdates,
-                         EksIdentityProviderConfigService identityProviderConfigs) {
+                         EksIdentityProviderConfigService identityProviderConfigs,
+                         RegionResolver regionResolver) {
         this.eksService = eksService;
         this.accessEntries = accessEntries;
         this.podIdentityAssociations = podIdentityAssociations;
         this.addons = addons;
         this.clusterUpdates = clusterUpdates;
         this.identityProviderConfigs = identityProviderConfigs;
+        this.regionResolver = regionResolver;
     }
 
     @POST
@@ -226,6 +233,14 @@ public class EksController {
     }
 
     @POST
+    @Path("/clusters/{name}/access-entries/{principalArn: .+}")
+    public Response updateAccessEntry(@PathParam("name") String name, @PathParam("principalArn") String principalArn,
+                                      UpdateAccessEntryRequest request) {
+        return Response.ok(Map.of("accessEntry",
+                accessEntries.update(eksService.describeCluster(name), principalArn, request))).build();
+    }
+
+    @POST
     @Path("/clusters/{name}/access-entries/{principalArn: .+}/access-policies")
     public Response associateAccessPolicy(@PathParam("name") String name, @PathParam("principalArn") String principalArn,
                                           AssociateAccessPolicyRequest request) {
@@ -259,6 +274,17 @@ public class EksController {
                                              @PathParam("policyArn") String policyArn) {
         accessEntries.disassociate(eksService.describeCluster(name), principalArn, policyArn);
         return Response.ok(Map.of()).build();
+    }
+
+    @GET
+    @Path("/access-policies")
+    public Response listAccessPolicies(@QueryParam("maxResults") String maxResults,
+                                       @QueryParam("nextToken") String nextToken) {
+        PaginatedResult<AccessPolicy> page = accessEntries.listAccessPolicies(regionResolver.getPartition(),
+                Pagination.parseMaxResults(maxResults, "InvalidParameterException"), nextToken);
+        return Response.ok(page.nextToken() == null
+                ? Map.of("accessPolicies", page.items())
+                : Map.of("accessPolicies", page.items(), "nextToken", page.nextToken())).build();
     }
 
     @POST

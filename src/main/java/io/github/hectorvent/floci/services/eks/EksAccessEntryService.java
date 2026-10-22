@@ -9,12 +9,14 @@ import io.github.hectorvent.floci.core.storage.AccountAwareStorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.eks.model.AccessEntry;
+import io.github.hectorvent.floci.services.eks.model.AccessPolicy;
 import io.github.hectorvent.floci.services.eks.model.AccessScope;
 import io.github.hectorvent.floci.services.eks.model.AssociateAccessPolicyRequest;
 import io.github.hectorvent.floci.services.eks.model.AssociatedAccessPolicy;
 import io.github.hectorvent.floci.services.eks.model.Cluster;
 import io.github.hectorvent.floci.services.eks.model.ClusterStatus;
 import io.github.hectorvent.floci.services.eks.model.CreateAccessEntryRequest;
+import io.github.hectorvent.floci.services.eks.model.UpdateAccessEntryRequest;
 import io.github.hectorvent.floci.services.iam.IamService;
 import io.github.hectorvent.floci.services.iam.model.IamRole;
 import io.github.hectorvent.floci.services.iam.model.IamUser;
@@ -35,6 +37,19 @@ import java.util.UUID;
 /** Access-entry and access-policy management metadata; Kubernetes authorization is handled separately. */
 @ApplicationScoped
 public class EksAccessEntryService {
+    private static final List<String> ACCESS_POLICY_NAMES = List.of(
+            "AWSBackupFullAccessPolicyForBackup", "AWSBackupFullAccessPolicyForRestore",
+            "AmazonAIOpsAssistantPolicy", "AmazonARCRegionSwitchScalingPolicy", "AmazonEKSACKPolicy",
+            "AmazonEKSAdminPolicy", "AmazonEKSAdminViewPolicy", "AmazonEKSArgoCDClusterPolicy",
+            "AmazonEKSArgoCDPolicy", "AmazonEKSAutoNodePolicy", "AmazonEKSBlockStorageClusterPolicy",
+            "AmazonEKSBlockStoragePolicy", "AmazonEKSClusterAdminPolicy", "AmazonEKSClusterInsightsPolicy",
+            "AmazonEKSComputeClusterPolicy", "AmazonEKSComputePolicy", "AmazonEKSEditPolicy",
+            "AmazonEKSHybridPolicy", "AmazonEKSKROPolicy", "AmazonEKSLoadBalancingClusterPolicy",
+            "AmazonEKSLoadBalancingPolicy", "AmazonEKSNetworkingClusterPolicy", "AmazonEKSNetworkingPolicy",
+            "AmazonEKSPodIdentityPolicy", "AmazonEKSSecretAdminPolicy", "AmazonEKSSecretReaderPolicy",
+            "AmazonEKSViewPolicy");
+    private static final int MAX_PAGE_SIZE = 100;
+
     private final StorageBackend<String, StoredEntry> entries;
     private final IamService iam;
     private final Clock clock;
@@ -114,6 +129,17 @@ public class EksAccessEntryService {
         }
         entries.put(prefix(cluster) + principal, new StoredEntry(stored.entry(), stored.principalId(),
                 stored.clientRequestToken(), policies));
+    }
+
+    public PaginatedResult<AccessPolicy> listAccessPolicies(String partition, Integer maxResults, String nextToken) {
+        List<AccessPolicy> policies = ACCESS_POLICY_NAMES.stream()
+                .map(name -> new AccessPolicy(name, accessPolicyArn(partition, name))).toList();
+        return Pagination.paginate(policies, AccessPolicy::name, maxResults, nextToken, MAX_PAGE_SIZE,
+                "InvalidParameterException");
+    }
+
+    private static String accessPolicyArn(String partition, String name) {
+        return "arn:" + partition + ":eks::aws:cluster-access-policy/" + name;
     }
 
     private StoredEntry storedEntry(Cluster cluster, String principal) {
@@ -230,6 +256,29 @@ public class EksAccessEntryService {
         return entry;
     }
 
+    public synchronized AccessEntry update(Cluster cluster, String principal, UpdateAccessEntryRequest request) {
+        StoredEntry stored = storedEntry(cluster, principal);
+        AccessEntry entry = stored.entry();
+        List<String> groups = request == null ? null : request.kubernetesGroups();
+        String username = request == null ? null : request.username();
+        if (!"STANDARD".equals(entry.type()) && (groups != null || username != null)) {
+            throw invalid(entry.type() + " entries cannot specify username or kubernetesGroups");
+        }
+        if (username != null) {
+            requireValidUsername(username);
+        }
+        if (groups != null) {
+            requireValidGroups(groups);
+        }
+        AccessEntry updated = new AccessEntry(entry.accessEntryArn(), entry.clusterName(), entry.principalArn(),
+                entry.type(), username == null ? entry.username() : username,
+                groups == null ? entry.kubernetesGroups() : List.copyOf(groups), entry.tags(), entry.createdAt(),
+                clock.millis() / 1000.0);
+        entries.put(prefix(cluster) + principal, new StoredEntry(updated, stored.principalId(),
+                stored.clientRequestToken(), stored.accessPolicies()));
+        return updated;
+    }
+
     synchronized Optional<AccessEntry> workerEntry(Cluster cluster, String accountId, String principal, String roleId) {
         requireApiAccess(cluster);
         String key = prefix(cluster) + principal;
@@ -307,6 +356,24 @@ public class EksAccessEntryService {
                 && arn.resource().matches("cluster-access-policy/[A-Za-z0-9]+");
         if (!accessPolicy) {
             throw invalid("policyArn must identify an EKS cluster access policy");
+        }
+    }
+
+    private static void requireValidUsername(String username) {
+        if (username.isBlank() || username.matches("^(system|eks|aws|amazon|iam):.*")) {
+            throw invalid("Invalid username");
+        }
+        for (String placeholder : List.of("{{SessionName}}", "{{SessionNameRaw}}")) {
+            int position = username.indexOf(placeholder);
+            if (position >= 0 && !username.substring(0, position).contains(":")) {
+                throw invalid("A session-name placeholder must be preceded by a colon");
+            }
+        }
+    }
+
+    private static void requireValidGroups(List<String> groups) {
+        if (groups.stream().anyMatch(group -> group == null || group.isBlank())) {
+            throw invalid("kubernetesGroups must contain nonempty strings");
         }
     }
 

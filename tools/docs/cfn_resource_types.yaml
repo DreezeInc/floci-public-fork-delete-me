@@ -221,7 +221,7 @@ notes:
   AWS::AppConfig::ConfigurationProfile: '`Tags`, `KmsKeyIdentifier`, `RetrievalRoleArn`, `Validators` and `DeletionProtectionCheck` are accepted and not stored'
   AWS::AppConfig::DeploymentStrategy: '`Tags` are accepted and not stored; `ReplicateTo: SSM_DOCUMENT` writes no SSM document'
   AWS::EKS::Addon: '`PreserveOnDelete` is ignored; a stack delete removes the addon; a reused addon is not reconciled on update'
-  AWS::EKS::AccessEntry: '`AccessPolicies` are accepted and not associated; a reused entry is not reconciled on update'
+  AWS::EKS::AccessEntry: '`AccessPolicies` are associated on create and reconciled on update; a reused entry''s other properties are not reconciled'
   AWS::EKS::PodIdentityAssociation: 'a reused association is not reconciled on update'
   AWS::EKS::IdentityProviderConfig: 'metadata only, the issuer is never contacted and the config is ACTIVE at once; a reused config is not reconciled on update'
   AWS::IAM::OIDCProvider: 'a reused provider is not reconciled on update'

@@ -16,10 +16,12 @@ EKS uses a standard REST API with JSON bodies: not the JSON 1.1 (`X-Amz-Target`)
 | `CreateAccessEntry` | Create STANDARD or EC2_LINUX access-entry metadata |
 | `DescribeAccessEntry` | Describe an access entry by IAM principal ARN |
 | `ListAccessEntries` | List principal ARNs with pagination |
-| `DeleteAccessEntry` | Delete access-entry metadata |
-| `AssociateAccessPolicy` | Associate an EKS access policy and its cluster or namespace scope with a STANDARD access entry |
+| `UpdateAccessEntry` | Update the Kubernetes groups or username of an access entry |
+| `DeleteAccessEntry` | Delete access-entry metadata and its access-policy associations |
+| `AssociateAccessPolicy` | Associate an AWS-managed access policy with a STANDARD access entry, or change its scope |
 | `ListAssociatedAccessPolicies` | List the access policies associated with an access entry, with pagination |
-| `DisassociateAccessPolicy` | Remove an access policy from an access entry |
+| `DisassociateAccessPolicy` | Disassociate an access policy from an access entry |
+| `ListAccessPolicies` | List the AWS-managed access policies |
 | `CreatePodIdentityAssociation` | Create a pod identity association between a service account and IAM role |
 | `DescribePodIdentityAssociation` | Describe a pod identity association by association ID |
 | `ListPodIdentityAssociations` | List pod identity associations in a cluster with optional filtering and pagination |
@@ -109,7 +111,17 @@ Access policies are management metadata, like the entries they belong to: Floci 
 
 The principal ARN in an access-entry path should be URL-encoded, as the SDKs and the CLI send it. Sent unencoded, a principal whose ARN ends in `/access-policies` (a role named `access-policies`) is read as the access-policies route of the shorter principal before it. A DELETE is a disassociate only when a cluster access policy ARN follows `access-policies`, so an entry with `access-policies` inside its IAM path can always be deleted.
 
+`UpdateAccessEntry` changes only the fields it is given: `kubernetesGroups` replaces the group list (an empty list clears it) and `username` replaces the username, with the same rules as create. EC2_LINUX entries accept neither. The entry's `modifiedAt` moves forward.
+
 Access entries use EKS storage and retain the IAM principal's stable ID internally. Cluster deletion removes its entries, and a cluster recreated with the same name does not inherit previous entries or pagination tokens.
+
+### Access policies
+
+`ListAccessPolicies` (`GET /access-policies`) returns the AWS-managed catalog as `{name, arn}` pairs, such as `AmazonEKSClusterAdminPolicy`, `AmazonEKSAdminPolicy`, `AmazonEKSEditPolicy` and `AmazonEKSViewPolicy`, with ARNs of the form `arn:<partition>:eks::aws:cluster-access-policy/<name>`.
+
+`AssociateAccessPolicy` accepts only a policy from that catalog, in the cluster's partition, and only on a STANDARD entry. The `accessScope.type` is `cluster` or `namespace`: a `namespace` scope needs at least one namespace (wildcards such as `dev-*` are stored as given), and a `cluster` scope takes no namespaces and is returned with `namespaces: []`. Associating a policy that is already associated replaces its scope and moves `modifiedAt` forward while `associatedAt` stays. `ListAssociatedAccessPolicies` pages with `maxResults` (1-100) and `nextToken`. `DisassociateAccessPolicy` returns `ResourceNotFoundException` when the policy is not associated. Principal and policy ARNs travel URL-encoded in the path, as the AWS SDKs send them. A missing access entry is `ResourceNotFoundException` with the message `The specified principalArn could not be found.`, which Terraform's `aws_eks_access_policy_association` retries on.
+
+Associations are stored with their access entry, so deleting the entry or the cluster removes them. They are metadata only: Kubernetes authorization does not read them.
 
 ### EC2 Linux worker authentication
 
@@ -137,7 +149,7 @@ other tools added stay. A replaced k3s container is mapped again. The token webh
 `aws-auth`; the ConfigMap exists for tools that read or edit it.
 
 !!! note "Authentication scope"
-    Non-worker IAM users and ordinary STS sessions retain the existing cluster-admin compatibility behavior. STANDARD entries, access policies, the aws-auth ConfigMap's mappings, the cluster-creator bootstrap flag and automatic managed-node entries are not enforced by this change. Updating authentication mode, UpdateAccessEntry, ListAccessPolicies, and entry tag updates remain unimplemented. Native AL2023 images, bootstrap RBAC/CSR approval, CNI and worker networking are separate requirements for registration and Ready.
+    Non-worker IAM users and ordinary STS sessions retain the existing cluster-admin compatibility behavior. STANDARD entries, access policies, the aws-auth ConfigMap's mappings, the cluster-creator bootstrap flag and automatic managed-node entries are not enforced by this change. Tag updates on an existing access entry remain unimplemented. Native AL2023 images, bootstrap RBAC/CSR approval, CNI and worker networking are separate requirements for registration and Ready.
 
 ```bash
 aws --endpoint-url http://localhost:4566 eks create-cluster \
@@ -148,6 +160,12 @@ aws --endpoint-url http://localhost:4566 eks create-cluster \
 aws --endpoint-url http://localhost:4566 eks create-access-entry \
   --cluster-name local-nodes --principal-arn arn:aws:iam::000000000000:role/worker \
   --type EC2_LINUX
+aws --endpoint-url http://localhost:4566 eks create-access-entry \
+  --cluster-name local-nodes --principal-arn arn:aws:iam::000000000000:role/admin
+aws --endpoint-url http://localhost:4566 eks associate-access-policy \
+  --cluster-name local-nodes --principal-arn arn:aws:iam::000000000000:role/admin \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster
 ```
 
 ## Pod Identity Associations
