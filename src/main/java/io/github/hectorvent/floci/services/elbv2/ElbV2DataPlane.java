@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.config.TlsProxyServer;
+import io.github.hectorvent.floci.core.common.AwsArnUtils;
 import io.github.hectorvent.floci.core.common.CertificateReferenceResolver;
 import io.github.hectorvent.floci.core.common.CertificateReferenceResolver.CertificateMaterial;
 import io.github.hectorvent.floci.core.common.Pem;
+import io.github.hectorvent.floci.core.common.RequestScopes;
 import io.github.hectorvent.floci.core.common.tls.ReloadingKeyManager;
 import io.github.hectorvent.floci.services.ec2.Ec2Service;
 import io.github.hectorvent.floci.services.elbv2.model.Action;
@@ -805,6 +807,10 @@ public class ElbV2DataPlane {
             req.response().setStatusCode(502).end("No listener for host");
             return;
         }
+        asListenerOwner(listener.arn(), listener.region(), () -> dispatch(req, listener));
+    }
+
+    private void dispatch(HttpServerRequest req, RoutedListener listener) {
         for (CompiledRule compiled : listener.chain()) {
             if (compiled.matches(req)) {
                 executeAction(req, compiled.action, listener.region(), listener.arn());
@@ -812,6 +818,19 @@ public class ElbV2DataPlane {
             }
         }
         req.response().setStatusCode(502).end("No matching rule");
+    }
+
+    /**
+     * The data plane answers requests outside any AWS request, where account-aware state resolves
+     * to the default account. Its lookups run as the account that owns the listener, the way the
+     * control-plane calls that created the listener did.
+     */
+    private static void asListenerOwner(String listenerArn, String region, Runnable body) {
+        RequestScopes.runAs(ownerAccount(listenerArn), region, body);
+    }
+
+    private static String ownerAccount(String listenerArn) {
+        return AwsArnUtils.parse(listenerArn).accountId();
     }
 
     /** Floci's shared socket first uses load-balancer DNS, then unique rule or certificate hosts. */
@@ -894,7 +913,7 @@ public class ElbV2DataPlane {
                 return;
             }
             String functionArn = targets.get(0).getId();
-            invokeLambdaTarget(req, functionArn, region);
+            invokeLambdaTarget(req, functionArn, region, listenerArn);
             return;
         }
 
@@ -926,7 +945,8 @@ public class ElbV2DataPlane {
         }
         req.pause();
         vertx.<ElbV2IpTargets.Route>executeBlocking(() -> ElbV2TargetResolver.route(ipTargets, tg, host, targetPort))
-                .onSuccess(route -> forwardTo(req, route, host, targetPort, listenerArn, region, cookies))
+                .onSuccess(route -> asListenerOwner(listenerArn, region,
+                        () -> forwardTo(req, route, host, targetPort, listenerArn, region, cookies)))
                 .onFailure(err -> rejectTarget(req, host, err));
     }
 
@@ -967,9 +987,10 @@ public class ElbV2DataPlane {
         return Math.max(1, seconds) * 1000;
     }
 
-    private void invokeLambdaTarget(HttpServerRequest req, String functionArn, String region) {
+    private void invokeLambdaTarget(HttpServerRequest req, String functionArn, String region,
+                                    String listenerArn) {
         if (req.isEnded()) {
-            invokeLambdaWithBody(req, functionArn, region, Buffer.buffer());
+            invokeLambdaWithBody(req, functionArn, region, listenerArn, Buffer.buffer());
             return;
         }
         ByteArrayOutputStream body = new ByteArrayOutputStream();
@@ -994,22 +1015,23 @@ public class ElbV2DataPlane {
             if (rejected.get()) {
                 return;
             }
-            invokeLambdaWithBody(req, functionArn, region, Buffer.buffer(body.toByteArray()));
+            invokeLambdaWithBody(req, functionArn, region, listenerArn, Buffer.buffer(body.toByteArray()));
         });
     }
 
     private void invokeLambdaWithBody(HttpServerRequest req, String functionArn,
-                                      String region, Buffer body) {
+                                      String region, String listenerArn, Buffer body) {
         Map<String, Object> event = buildAlbEvent(req, body);
+        String accountId = ownerAccount(listenerArn);
         // Lambda invocation is synchronous and may take seconds while a cold container
         // boots and polls the Runtime API. The Runtime API itself runs on Vert.x event
         // loops, so blocking the listener's event loop here would deadlock the runtime
         // and the function would time out. Offload to a worker thread, same as WebSocket.
         // ordered=false so independent ALB requests run in parallel on the worker pool.
-        vertx.<InvokeResult>executeBlocking(() -> {
+        vertx.<InvokeResult>executeBlocking(() -> RequestScopes.callAsChecked(accountId, region, () -> {
             byte[] payload = objectMapper.writeValueAsBytes(event);
             return lambdaService.invoke(region, functionArn, payload, InvocationType.RequestResponse);
-        }, false).onSuccess(result -> {
+        }), false).onSuccess(result -> {
             try {
                 writeLambdaResponse(req, result);
             } catch (Exception e) {
