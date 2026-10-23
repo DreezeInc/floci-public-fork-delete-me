@@ -3666,6 +3666,13 @@ public interface EmulatorConfig {
         int maxVcpus();
 
         /**
+         * When false, the k3s node container runs without the CPU quota and memory limit of its
+         * instance type, and kubelet keeps its own reservations.
+         */
+        @WithDefault("true")
+        boolean nodeResourceLimits();
+
+        /**
          * When true, the shared node keeps the capacity it started with: creating the first node
          * group records its instance type but does not recreate the node's container, so the
          * Kubernetes API and the node's workloads keep running while node groups are created.
