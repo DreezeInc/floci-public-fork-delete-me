@@ -252,7 +252,8 @@ class EksClusterManagerArchiveRetryTest {
         assertDoesNotThrow(() -> manager.startCluster(cluster));
 
         assertEquals(List.of("audit-policy.yaml", "etc/containerd/certs.d",
-                        "server/manifests/floci-eks-pod-identity.yaml", "sa-signing-key.pem"),
+                        "server/manifests/floci-eks-pod-identity.yaml",
+                        "server/manifests/floci-eks-control-plane.yaml", "sa-signing-key.pem"),
                 uploads.stream().map(upload -> upload.entries().getLast().name()).toList(),
                 "each rejected feature is attempted once and startup continues with reduced functionality");
         verify(lifecycleManager).startCreated(any(), any());
