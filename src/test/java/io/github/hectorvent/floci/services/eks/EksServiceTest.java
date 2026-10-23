@@ -125,11 +125,17 @@ class EksServiceTest {
     }
 
     private EmulatorConfig testConfig(boolean mock, boolean keepRunningOnShutdown) {
+        return testConfig(mock, keepRunningOnShutdown, false);
+    }
+
+    private EmulatorConfig testConfig(boolean mock, boolean keepRunningOnShutdown,
+                                      boolean fixedNodeCapacity) {
         EmulatorConfig.EksServiceConfig eksConfig = proxy(EmulatorConfig.EksServiceConfig.class,
                 (proxy, method, args) -> switch (method.getName()) {
                     case "enabled" -> true;
                     case "mock" -> mock;
                     case "keepRunningOnShutdown" -> keepRunningOnShutdown;
+                    case "fixedNodeCapacity" -> fixedNodeCapacity;
                     case "apiServerBasePort" -> 6500;
                     default -> defaultValue(method);
                 });
@@ -1017,6 +1023,21 @@ class EksServiceTest {
     }
 
     @Test
+    void firstNodeGroupKeepsTheSharedNodeWhenItsCapacityIsFixed() {
+        EksClusterManager clusterManager = capacitySwapManager(true);
+        EksService service = newService(clusterManager, false, true);
+        Cluster cluster = activeClusterWithRunningNode(service, "fixed-capacity-cluster");
+
+        Nodegroup nodeGroup = service.createNodeGroup("fixed-capacity-cluster", nodeGroupRequest("first"));
+
+        assertEquals(NodegroupStatus.ACTIVE, nodeGroup.getStatus());
+        assertEquals(ClusterStatus.ACTIVE, cluster.getStatus());
+        assertEquals("t3.medium", cluster.getNodeInstanceType());
+        assertFalse(cluster.isFinalizePending());
+        verify(clusterManager, never()).restartForNodeCapacity(any(), anyString());
+    }
+
+    @Test
     void readinessPollerFinalizesTheReplacedNodeOfAnActiveCluster() {
         EksClusterManager clusterManager = capacitySwapManager(true);
         EksService service = newService(clusterManager, false);
@@ -1554,6 +1575,10 @@ class EksServiceTest {
     }
 
     private EksService newService(EksClusterManager clusterManager, boolean mock) {
+        return newService(clusterManager, mock, false);
+    }
+
+    private EksService newService(EksClusterManager clusterManager, boolean mock, boolean fixedNodeCapacity) {
         StorageFactory storageFactory = new StorageFactory(null, null) {
             @Override
             public <V> AccountAwareStorageBackend<V> create(String serviceName, String fileName,
@@ -1563,7 +1588,7 @@ class EksServiceTest {
                 return backend;
             }
         };
-        return new EksService(storageFactory, testConfig(mock),
+        return new EksService(storageFactory, testConfig(mock, false, fixedNodeCapacity),
                 new RegionResolver("us-east-1", "000000000000"), clusterManager, null,
                 new EksOidcService(storageFactory, new ObjectMapper()), mock(EksAccessEntryService.class));
     }
