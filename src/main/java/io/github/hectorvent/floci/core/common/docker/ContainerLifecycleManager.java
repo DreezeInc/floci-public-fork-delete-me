@@ -38,6 +38,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -87,6 +88,7 @@ public class ContainerLifecycleManager {
     private static final String LOOPBACK_HOST_IP = "127.0.0.1";
 
     private final Semaphore teardownSlots = new Semaphore(8, true);
+    private static final long NOT_RUNNING_POLL_MILLIS = 500;
 
     private final DockerClient dockerClient;
     private final ImageCacheService imageCacheService;
@@ -1254,6 +1256,31 @@ public class ContainerLifecycleManager {
      */
     public boolean isContainerRunning(String containerId) {
         return probeContainer(containerId) == ContainerLiveness.RUNNING;
+    }
+
+    /**
+     * Waits for Docker to report a container stopped or gone, for example after a stop that failed
+     * because Docker did not see the exit event in time.
+     *
+     * @param containerId the container ID to watch
+     * @param timeout how long to wait
+     * @return true once the container is not running, false if it still runs (or cannot be probed)
+     *         at the deadline
+     */
+    public boolean awaitNotRunning(String containerId, Duration timeout) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (probeContainer(containerId) != ContainerLiveness.NOT_RUNNING) {
+            if (System.nanoTime() - deadline >= 0) {
+                return false;
+            }
+            try {
+                Thread.sleep(NOT_RUNNING_POLL_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
