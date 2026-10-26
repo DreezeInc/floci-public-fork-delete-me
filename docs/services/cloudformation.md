@@ -180,7 +180,7 @@ cross-resource references.
 | Organizations | `Organization`, `OrganizationalUnit`, `Account`, `Policy`, `ResourcePolicy` |
 | SSM | `Parameter` |
 | KMS | `Key`, `Alias` |
-| Secrets Manager | `Secret`, `SecretTargetAttachment` |
+| Secrets Manager | `Secret`, `SecretTargetAttachment`, `RotationSchedule` |
 | ECR | `Repository` |
 | ECS | `Cluster`, `TaskDefinition`, `Service`, `CapacityProvider`, `ClusterCapacityProviderAssociations` |
 | EKS | `Cluster`, `Nodegroup`, `Addon` (`PreserveOnDelete` is ignored; a stack delete removes the addon; a reused addon is not reconciled on update), `AccessEntry` (`AccessPolicies` are associated on create and reconciled on update; a reused entry's other properties are not reconciled), `PodIdentityAssociation` (a reused association is not reconciled on update), `IdentityProviderConfig` (metadata only, the issuer is never contacted and the config is ACTIVE at once; a reused config is not reconciled on update) |
@@ -334,6 +334,15 @@ Redshift clusters, Redshift Serverless namespaces, and DocumentDB Elastic cluste
 because their backing services are not implemented. A `SecretId` change is applied in place rather
 than reproducing CloudFormation's replacement event sequence; failed changes restore affected secret
 data and attachment ownership.
+
+## Secrets Manager Rotation Schedules
+
+`AWS::SecretsManager::RotationSchedule` calls `RotateSecret` on the referenced secret with the
+template's `RotationLambdaARN` and `RotationRules`. `RotateImmediatelyOnUpdate` is passed through:
+the default rotates at once, and `false` runs only the rotation function's `testSecret` step, as on
+AWS. An update is the same call again. `Ref` and `Fn::GetAtt Id` return the secret ARN, and deleting
+the schedule turns rotation off and keeps the secret. `HostedRotationLambda` is not supported, since
+it deploys one of Secrets Manager's own rotation functions from a serverless application.
 
 ## Organizations
 
