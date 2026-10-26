@@ -64,9 +64,11 @@ public class EcrCfnProvisioner implements CfnResourceProvisioner {
         // reconciled in place; a replacing update derives a different name and creates, and a name
         // that already belongs to another repository fails the create as on CloudFormation.
         boolean reusing = ctx.reusesPriorEntity(repoName);
+        JsonNode encryption = ctx.engine().resolveNode(props != null ? props.path("EncryptionConfiguration") : null);
         Repository repo = reusing
                 ? reconcileExisting(repoName, mutability, tags, region)
-                : ecrService.createRepository(repoName, null, mutability, null, null, null, tags, region);
+                : ecrService.createRepository(repoName, null, mutability, null,
+                        textOrNull(encryption, "EncryptionType"), textOrNull(encryption, "KmsKey"), tags, region);
 
         // Both policies are updatable: a template that declares one sets it, and on the update
         // path a template that no longer declares one deletes it, tolerating "none set".
@@ -95,6 +97,10 @@ public class EcrCfnProvisioner implements CfnResourceProvisioner {
     @Override
     public void delete(String resourceType, String physicalId, String region) {
         ecrService.deleteRepository(physicalId, null, true, region);
+    }
+
+    private static String textOrNull(JsonNode node, String field) {
+        return node == null || node.isMissingNode() || node.isNull() ? null : node.path(field).asText(null);
     }
 
     /**
