@@ -469,7 +469,7 @@ class EksClusterManagerTest {
         assertFalse(defaults.contains("--disable=servicelb"));
         assertFalse(defaults.contains("--disable-cloud-controller"));
 
-        List<String> args = EksClusterManager.buildServerArgs(false, false, true, null, null, Optional.empty());
+        List<String> args = EksClusterManager.buildServerArgs(false, false, true, null, null);
 
         assertTrue(args.contains("--disable=servicelb"));
         assertTrue(args.contains("--disable-cloud-controller"));
@@ -496,7 +496,7 @@ class EksClusterManagerTest {
     void serverArgsAlwaysDisableK3sMetricsServer() {
         assertTrue(EksClusterManager.buildServerArgs(false).contains("--disable=metrics-server"));
         assertTrue(EksClusterManager.buildServerArgs(true).contains("--disable=metrics-server"));
-        assertTrue(EksClusterManager.buildServerArgs(false, true, true, null, null, Optional.empty())
+        assertTrue(EksClusterManager.buildServerArgs(false, true, true, null, null)
                 .contains("--disable=metrics-server"));
     }
 
@@ -504,24 +504,8 @@ class EksClusterManagerTest {
     void serverArgsAlwaysDisableK3sRuntimeClasses() {
         assertTrue(EksClusterManager.buildServerArgs(false).contains("--disable=runtimes"));
         assertTrue(EksClusterManager.buildServerArgs(true).contains("--disable=runtimes"));
-        assertTrue(EksClusterManager.buildServerArgs(false, true, true, null, null, Optional.empty())
+        assertTrue(EksClusterManager.buildServerArgs(false, true, true, null, null)
                 .contains("--disable=runtimes"));
-    }
-
-    @Test
-    void serverArgsAddTheEndpointHostAsASecondTlsSan() {
-        List<String> args = EksClusterManager.buildServerArgs(false, false, null, null,
-                Optional.of("floci-service.floci-pr-1.svc.cluster.local"));
-
-        assertTrue(args.contains("--tls-san=localhost"));
-        assertTrue(args.contains("--tls-san=floci-service.floci-pr-1.svc.cluster.local"));
-    }
-
-    @Test
-    void serverArgsIgnoreABlankEndpointHost() {
-        List<String> args = EksClusterManager.buildServerArgs(false, false, null, null, Optional.of(" "));
-
-        assertEquals(1, args.stream().filter(a -> a.startsWith("--tls-san=")).count());
     }
 
     @Test

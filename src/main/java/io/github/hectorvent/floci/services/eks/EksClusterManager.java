@@ -704,8 +704,7 @@ public class EksClusterManager
                 defaultStorageClass,
                 config.services().eks().loadBalancerServices(),
                 serviceCidr,
-                clusterCidr,
-                Optional.empty());
+                clusterCidr);
         String endpointHost = endpointHost();
         if (!"localhost".equals(endpointHost)) {
             serverArgs.add("--tls-san=" + endpointHost);
@@ -1719,12 +1718,7 @@ public class EksClusterManager
      */
     static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
             String serviceCidr, String clusterCidr) {
-        return buildServerArgs(disableCni, defaultStorageClass, serviceCidr, clusterCidr, Optional.empty());
-    }
-
-    static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
-            String serviceCidr, String clusterCidr, Optional<String> endpointHost) {
-        return buildServerArgs(disableCni, defaultStorageClass, false, serviceCidr, clusterCidr, endpointHost);
+        return buildServerArgs(disableCni, defaultStorageClass, false, serviceCidr, clusterCidr);
     }
 
     /**
@@ -1732,13 +1726,12 @@ public class EksClusterManager
      * otherwise answer every {@code LoadBalancer} Service with the node's own address.
      */
     static List<String> buildServerArgs(boolean disableCni, boolean defaultStorageClass,
-            boolean loadBalancerServices, String serviceCidr, String clusterCidr, Optional<String> endpointHost) {
+            boolean loadBalancerServices, String serviceCidr, String clusterCidr) {
         List<String> serverArgs = new ArrayList<>(List.of("server",
                 "--disable=traefik",
                 "--disable=runtimes",
                 "--disable=metrics-server",
                 "--tls-san=localhost"));
-        endpointHost.filter(host -> !host.isBlank()).ifPresent(host -> serverArgs.add("--tls-san=" + host));
         if (!defaultStorageClass) {
             serverArgs.add("--disable=local-storage");
         }
